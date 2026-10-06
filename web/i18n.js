@@ -98,6 +98,7 @@ window.I18N = {
     m_budget: "스킬 목록 예산 사용률",
     demo_banner: "데모 — 가짜 데이터, 실행 버튼은 동작하지 않음",
     demo_readonly: "데모 모드에서는 실행되지 않는다",
+    ac_listing: "설명 숨김 (name-only, 이름은 남아 부를 수 있음)",
   },
   en: {
     tab_map: "Map", tab_audit: "Audit", refresh: "Refresh", theme: "Theme", language: "Language",
@@ -191,6 +192,7 @@ window.I18N = {
     m_budget: "Skill list budget used",
     demo_banner: "Demo — fake data, action buttons are disabled",
     demo_readonly: "Actions are disabled in demo mode",
+    ac_listing: "hide description (name-only — still invocable by name)",
   },
   ja: {
     tab_map: "マップ", tab_audit: "点検", refresh: "再読み込み", theme: "テーマ", language: "言語",
@@ -284,6 +286,7 @@ window.I18N = {
     m_budget: "スキル一覧の予算使用率",
     demo_banner: "デモ — 架空データ、実行ボタンは動作しません",
     demo_readonly: "デモモードでは実行されません",
+    ac_listing: "説明を隠す（name-only、名前は残り呼び出せる）",
   },
   zh: {
     tab_map: "地图", tab_audit: "检查", refresh: "刷新", theme: "主题", language: "语言",
@@ -377,6 +380,7 @@ window.I18N = {
     m_budget: "技能列表预算使用率",
     demo_banner: "演示 — 虚构数据，执行按钮不可用",
     demo_readonly: "演示模式下不执行",
+    ac_listing: "隐藏描述（name-only，名称保留仍可调用）",
   },
   es: {
     tab_map: "Mapa", tab_audit: "Auditoría", refresh: "Recargar", theme: "Tema", language: "Idioma",
@@ -470,6 +474,7 @@ window.I18N = {
     m_budget: "Presupuesto de skills usado",
     demo_banner: "Demo — datos ficticios, los botones de acción están desactivados",
     demo_readonly: "Las acciones están desactivadas en el modo demo",
+    ac_listing: "ocultar descripción (name-only; se puede invocar por nombre)",
   },
   fr: {
     tab_map: "Carte", tab_audit: "Audit", refresh: "Actualiser", theme: "Thème", language: "Langue",
@@ -563,6 +568,7 @@ window.I18N = {
     m_budget: "Budget des skills utilisé",
     demo_banner: "Démo — données fictives, les boutons d'action sont désactivés",
     demo_readonly: "Les actions sont désactivées en mode démo",
+    ac_listing: "masquer la description (name-only ; toujours invocable par son nom)",
   },
   ru: {
     tab_map: "Карта", tab_audit: "Проверка", refresh: "Обновить", theme: "Тема", language: "Язык",
@@ -656,6 +662,7 @@ window.I18N = {
     m_budget: "Использование бюджета навыков",
     demo_banner: "Демо — вымышленные данные, кнопки действий отключены",
     demo_readonly: "В демо-режиме действия отключены",
+    ac_listing: "скрыть описание (name-only, вызов по имени сохраняется)",
   },
   hi: {
     tab_map: "मानचित्र", tab_audit: "जाँच", refresh: "रीफ़्रेश", theme: "थीम", language: "भाषा",
@@ -749,6 +756,7 @@ window.I18N = {
     m_budget: "स्किल सूची बजट उपयोग",
     demo_banner: "डेमो — काल्पनिक डेटा, कार्रवाई बटन बंद हैं",
     demo_readonly: "डेमो मोड में कार्रवाई नहीं चलती",
+    ac_listing: "विवरण छिपाएँ (name-only — नाम से अब भी बुलाया जा सकता है)",
   },
   de: {
     tab_map: "Karte", tab_audit: "Prüfung", refresh: "Neu laden", theme: "Design", language: "Sprache",
@@ -842,6 +850,7 @@ window.I18N = {
     m_budget: "Genutztes Skill-Budget",
     demo_banner: "Demo — erfundene Daten, Aktionsknöpfe sind deaktiviert",
     demo_readonly: "Im Demo-Modus sind Aktionen deaktiviert",
+    ac_listing: "Beschreibung ausblenden (name-only — weiter per Name aufrufbar)",
   },
   pt: {
     tab_map: "Mapa", tab_audit: "Auditoria", refresh: "Recarregar", theme: "Tema", language: "Idioma",
@@ -935,5 +944,6 @@ window.I18N = {
     m_budget: "Orçamento de skills usado",
     demo_banner: "Demo — dados fictícios, os botões de ação estão desativados",
     demo_readonly: "Ações desativadas no modo demo",
+    ac_listing: "ocultar descrição (name-only — ainda pode ser chamada pelo nome)",
   },
 };

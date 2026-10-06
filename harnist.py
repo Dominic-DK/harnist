@@ -1655,12 +1655,85 @@ def recommendations(rows: list[dict], root: Path) -> list[dict]:
     return sorted(recs, key=lambda x: -x["chars"])
 
 
+def latest_skill_listing() -> list[dict]:
+    """세션 기록의 skill_listing 첨부 = 모델이 실제로 받은 스킬 목록. 측정 프로브 기록 중 가장 긴 것(잘리지 않은 것)을 쓴다."""
+    files = sorted((claude_home() / "projects").glob("*/*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+    # 가장 최근 측정 한 쌍(사용자·에이전트) 중 긴 쪽 = 잘리지 않은 목록. 옛 측정은 이미 바뀐 설정을 담고 있어 쓰지 않는다
+    probe = [f for f in files if "harnist-probe" in f.parent.name][:2] or files[:20]
+    best = ""
+    for f in probe:
+        for line in f.open(errors="ignore"):
+            if '"skill_listing"' not in line:
+                continue
+            try:
+                a = json.loads(line).get("attachment") or {}
+            except ValueError:
+                continue
+            if a.get("type") == "skill_listing" and len(a.get("content", "")) > len(best):
+                best = a["content"]
+    out = []
+    for m in re.finditer(r"(?ms)^- (\S+?): (.*?)(?=^- \S+?: |\Z)", best):
+        out.append({"name": m.group(1), "chars": len(m.group(2).strip())})
+    return out
+
+
+def skill_overrides() -> dict:
+    return read_json(claude_home() / "settings.json").get("skillOverrides") or {}
+
+
+def listing_report(days: int = 90) -> list[dict]:
+    """목록에 실린 스킬마다 출처·설명 글자 수·실사용·현재 오버라이드."""
+    use = scan_usage(days)
+    user_dirs = {p.parent.name for p in (claude_home() / "skills").glob("*/SKILL.md")}
+    plugins = {k.split("@")[0] for k, v in (read_json(claude_home() / "settings.json").get("enabledPlugins") or {}).items() if v}
+    ov = skill_overrides()
+    rows = []
+    for it in latest_skill_listing():
+        n = it["name"]
+        prefix = n.split(":")[0] if ":" in n else None
+        origin = "user" if n in user_dirs else ("plugin" if prefix in plugins else "builtin")
+        u = use.get(("skill", n)) or {}
+        rows.append({**it, "origin": origin, "calls": sum((u.get("repos") or {}).values()),
+                     "sessions": len(u.get("sessions") or ()), "override": ov.get(n)})
+    return sorted(rows, key=lambda r: -r["chars"])
+
+
+def listing_recs(rows: list[dict], min_chars: int = 80) -> list[dict]:
+    """안 쓰는 내장·플러그인 스킬은 설명만 숨긴다(skillOverrides: name-only) — 이름은 남아 부를 수 있다."""
+    return [{"item": f"listing:{r['name']}", "kind": "listing", "name": r["name"], "verdict": "미사용", "to": None, "attach": [],
+             "chars": r["chars"], "sessions": 0, "action": "name-only", "checked": True, "blocked": False, "origin": r["origin"]}
+            for r in rows if r["origin"] != "user" and not r["calls"] and not r["override"] and r["chars"] >= min_chars]
+
+
+def set_skill_overrides(names: list[str], value: str | None, log=print) -> None:
+    """~/.claude/settings.json 의 skillOverrides 키만 고친다. 고치기 전에 백업한다."""
+    import time
+    p = claude_home() / "settings.json"
+    d = read_json(p)
+    bk = claude_home() / ".harnist" / "backups"
+    bk.mkdir(parents=True, exist_ok=True)
+    if p.exists():
+        shutil.copy2(p, bk / f"settings-{time.strftime('%Y%m%d-%H%M%S')}.json")
+    ov = d.setdefault("skillOverrides", {})
+    for n in names:
+        if value is None:
+            ov.pop(n, None)
+        else:
+            ov[n] = value
+    if not ov:
+        d.pop("skillOverrides")
+    tmp = p.with_suffix(".json.harnist-tmp")
+    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n")
+    os.replace(tmp, p)
+    log(tr("skillOverrides 갱신: {names} → {value}", names=", ".join(names), value=value or tr("기본값")))
+
+
 def run_bench(label: str, root: Path, log=print) -> dict:
     import time
     log(tr("정적 점검: 세션 기록에서 전역 항목 사용을 집계한다"))
     rows = usage_report(90)
     out = {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "label": label, "static": static_summary(rows),
-           "recs": recommendations(rows, root), "sessions": {d: session_counts(d) for d in (30, 90)}, "probes": {}}
+           "recs": [], "sessions": {d: session_counts(d) for d in (30, 90)}, "probes": {}}
     for name, model in PROFILES.items():
         log(tr("{name} 세션 프로브: claude -p ({model}) 실행 중", name=name, model=model or tr("기본 모델")))
         try:
@@ -1669,6 +1742,7 @@ def run_bench(label: str, root: Path, log=print) -> dict:
             log(tr("  기본 컨텍스트 {tokens:,} 토큰 · ${cost:.4f} · 총 {wall}초", tokens=p["ctx_tokens"], cost=p["cost_usd"], wall=p["wall_s"]))
         except (HarnistError, subprocess.TimeoutExpired) as e:
             log(tr("  실패: {error}", error=e))
+    out["recs"] = recommendations(rows, root) + listing_recs(listing_report(90))
     d = bench_dir()
     f = d / f"{time.strftime('%Y%m%d-%H%M%S')}-{label}.json"
     f.write_text(json.dumps(out, ensure_ascii=False, indent=1))
@@ -1735,7 +1809,10 @@ def explain_change(b: dict, c: dict, noise: float = 0.5) -> list[dict]:
 
 
 def apply_recs(items: list[dict], log=print) -> None:
-    for it in items:
+    hide = [it["item"].split(":", 1)[1] for it in items if it["item"].startswith("listing:")]
+    if hide:
+        set_skill_overrides(hide, "name-only", log)
+    for it in [x for x in items if not x["item"].startswith("listing:")]:
         try:
             for line in demote(it["item"], it.get("to"), [Path(p).expanduser() for p in it.get("attach") or []]):
                 log(line)
@@ -2168,6 +2245,9 @@ def main(argv=None) -> int:
     vp.add_argument("--manifest", action="append", default=[])
     vp.add_argument("--open", action="store_true")
     vp.add_argument("--no-baseline", action="store_true", help=tr("첫 실행 자동 기준선 측정을 끈다"))
+    sk = sub.add_parser("skills", help=tr("모델이 받는 스킬 목록 — 출처·설명 길이·실사용·오버라이드"))
+    sk.add_argument("--name-only", nargs="+", metavar="SKILL", help=tr("설명만 숨긴다 (이름은 남아 부를 수 있다)"))
+    sk.add_argument("--reset", nargs="+", metavar="SKILL", help=tr("오버라이드를 지운다"))
     dp = sub.add_parser("demo", help=tr("가짜 데이터로 대시보드 띄우기 (읽기 전용, 실제 설정은 건드리지 않음)"))
     dp.add_argument("--port", type=int, default=8766)
     dp.add_argument("--open", action="store_true")
@@ -2228,6 +2308,23 @@ def main(argv=None) -> int:
             mp = (attach if a.cmd == "attach" else detach)(Path(a.repo), a.module)
             print(tr("연결: {module} — {path}. 이제 그 레포에서 generate 한다.", module=a.module, path=tilde(mp)) if a.cmd == "attach"
                   else tr("해제: {module} — {path}. 이제 그 레포에서 generate 한다.", module=a.module, path=tilde(mp)))
+            return 0
+        if a.cmd == "skills":
+            if a.name_only:
+                set_skill_overrides(a.name_only, "name-only")
+            if a.reset:
+                set_skill_overrides(a.reset, None)
+            rows = listing_report(90)
+            if not rows:
+                print(tr("스킬 목록 기록이 없다 — 먼저 harnist bench 를 한 번 돌린다"))
+                return 0
+            print(tr("모델이 받는 스킬 {n}개, 설명 {c}자 (가장 최근 측정 세션 기준)", n=len(rows), c=sum(r["chars"] for r in rows)))
+            for r in rows:
+                print(f"  {r['origin']:8} {r['name']:42} {r['chars']:5}  {tr('호출')} {r['calls']:3}  {r['override'] or ''}")
+            recs = listing_recs(rows)
+            if recs:
+                print(tr("설명을 숨겨도 되는 미사용 스킬 {n}개 ({c}자): harnist skills --name-only {names}",
+                         n=len(recs), c=sum(x["chars"] for x in recs), names=" ".join(x["name"] for x in recs)))
             return 0
         if a.cmd == "demo":
             sys.path.insert(0, str(HERE))
@@ -2329,6 +2426,15 @@ def main(argv=None) -> int:
 # 테스트가 harnist.py 의 모든 tr() 템플릿이 여기 있는지 확인한다.
 
 EN = {
+    "skillOverrides 갱신: {names} → {value}": "skillOverrides updated: {names} → {value}",
+    "기본값": "default",
+    "모델이 받는 스킬 목록 — 출처·설명 길이·실사용·오버라이드": "the skill list the model receives — origin, description length, real usage, overrides",
+    "설명만 숨긴다 (이름은 남아 부를 수 있다)": "hide only the description (the name stays and can still be invoked)",
+    "오버라이드를 지운다": "remove the override",
+    "스킬 목록 기록이 없다 — 먼저 harnist bench 를 한 번 돌린다": "No skill list on record yet — run harnist bench once first",
+    "모델이 받는 스킬 {n}개, 설명 {c}자 (가장 최근 측정 세션 기준)": "The model receives {n} skills, {c} description chars (latest measured session)",
+    "호출": "calls",
+    "설명을 숨겨도 되는 미사용 스킬 {n}개 ({c}자): harnist skills --name-only {names}": "{n} unused skills whose descriptions can be hidden ({c} chars): harnist skills --name-only {names}",
     # 파일·레지스트리·의존 해석
     "파일 없음: {path}": "File not found: {path}",
     "레지스트리 디렉터리 없음: {path}": "Registry directory not found: {path}",

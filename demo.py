@@ -165,7 +165,10 @@ def fake_bench(home: Path, rows: list, root: Path) -> None:
             "probes": {"user": probe("claude-opus-5-5[1m]", 33120, 21400, 0.1731, 1.62, 0.18, 1.31, 2.4, 0.9, 4, [], skills=(41, 16800, None)),
                        "agent": probe("claude-haiku-4-5", 29840, 15100, 0.0331, 1.48, 0.21, 1.27, 0.8, 2.1, 160, [])}}
     after = {"at": "2026-10-02 18:40:51", "label": "after", "sessions": sessions, "static": H.static_summary(rows),
-             "recs": H.recommendations(rows, root),
+             "recs": H.recommendations(rows, root) + [
+                 {"item": f"listing:{n}", "kind": "listing", "name": n, "verdict": "미사용", "to": None, "attach": [], "chars": c,
+                  "sessions": 0, "action": "name-only", "checked": True, "blocked": False, "origin": "builtin"}
+                 for n, c in (("dataviz", 1436), ("claude-api", 1068), ("schedule", 369))],
              "probes": {"user": probe("claude-opus-5-5[1m]", 25480, 15200, 0.1187, 0.94, 2.86, 1.25, 2.3, 0.8, 4,
                                       [{"kind": "net_timeout", "x": "Grove settings", "s": 2.65, "at": 2.9}, {"kind": "net", "x": "claudeai-mcp", "s": 0.41, "at": 0.9}], skills=(24, 9600, None)),
                         "agent": probe("claude-haiku-4-5", 27010, 10900, 0.0254, 0.88, 0.22, 1.24, 0.7, 2.0, 150, [], skills=(24, 9600, 8000))}}

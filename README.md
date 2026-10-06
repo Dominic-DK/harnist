@@ -2,7 +2,7 @@
 
 # harnist
 
-**The right skills, plugins and MCP servers for each project — with nothing truncated.**
+**Keep lightweight subagents from getting dumber — load only the skills, plugins and MCP servers each project needs.**
 
 A Tuist-style module manager and dashboard for [Claude Code](https://claude.com/claude-code) harnesses.
 
@@ -16,13 +16,13 @@ A Tuist-style module manager and dashboard for [Claude Code](https://claude.com/
 
 Every global skill, agent, plugin and MCP server you install rides along in **every** Claude Code session, whether or not that repo needs it. Three problems follow:
 
-- **Skill descriptions get truncated.** Claude Code budgets the skill list it shows the model. Past the budget it cuts descriptions, so the model picks the wrong skill or misses the right one. Claude Code logs this as `Skill listing over budget` — on the author's machine it was 89 skills and 33,688 characters against an 8,000-character budget.
+- **Lightweight subagents see truncated skill descriptions.** Claude Code shows the model a list of skill descriptions, budgeted by the context window. 1M-context sessions have room. 200k models such as Haiku and Sonnet — the ones you typically spawn as subagents or `claude -p` workers — get about 8,000 characters. Past that, descriptions are cut and the subagent picks the wrong skill or misses the right one. Claude Code logs this as `Skill listing over budget`. On the author's machine the list was 89 skills and 33,688 characters, four times the budget.
 - **Most of what is loaded is irrelevant.** Across 17 repos, a session used on average only 1 in 4 of the global items it carried.
 - **Copies drift.** Skills promoted from one repo to `~/.claude` by hand slowly diverge from their source.
 
 harnist treats your harness like a modular codebase. Shared things live in a **registry** as modules, each repo declares what it needs in a `harness.yaml`, and `.claude/` is **generated**. A dashboard shows what every repo actually uses, recommends what to move out of the global scope, and measures the effect.
 
-Token and cost savings come along, but they are the side effect, not the point.
+On the author's machine, archiving unused user items and hiding the descriptions of 29 unused built-in and plugin skills brought a Haiku session's skill list back inside the budget — every skill still listed by name. Token and cost savings come along, but they are the side effect, not the point.
 
 ## Quick start
 
@@ -77,6 +77,10 @@ Tick the recommendations and press **Apply selected and re-measure**. Archiving 
 - **Skills** leave a **stub** in `~/.claude/skills/<name>` with zero always-on cost. `/name` still works: the stub loads the archived copy and offers to connect it to the current repo or restore it globally.
 - **Originals** go to `.trash/`.
 - **Plugins** are disabled at user scope. **MCP servers** are removed at user scope, with their config kept in a module.
+
+#### Built-in and plugin skills
+
+Most of what remains after slimming your own skills comes from Claude Code's built-in skills and from plugins. `harnist skills` lists every skill the model actually receives — read from the session transcript, with origin, description length and real calls. Unused built-in and plugin skills are recommended for `skillOverrides: name-only`, which hides the description but keeps the name, so the skill can still be invoked. `harnist skills --name-only <skill> ...` applies it (settings are backed up first) and `--reset` undoes it.
 
 The top tiles are the numbers that matter:
 
@@ -158,6 +162,7 @@ harnist promote project/<x> --to domain/<x>       project module → shared regi
 harnist usage [--json]                            per-repo usage of global items
 harnist demote skill:<x> --to domain/<x> [--attach repo ...] [--dry-run]
 harnist recall skill:<x> --attach . | --global    bring an archived skill back
+harnist skills [--name-only S ...] [--reset S ...] every skill the model receives, and hiding unused descriptions
 harnist bench                                     measure startup time, base tokens and cost
 harnist audit [--mark]                            record the current global state as audited
 ```
@@ -176,13 +181,14 @@ harnist audit [--mark]                            record the current global stat
 - Spawn rules other than model routing end up as prompt text in `CLAUDE.md`. They are not enforced.
 - The lock detects marketplace drift but cannot pin a plugin version.
 - Usage counts only explicit calls in retained session history. Claude Code keeps 30 days by default (`cleanupPeriodDays`).
+- `skillOverrides` values (`name-only`, `off`) and the skill-list budget were observed in Claude Code, not documented.
 - Telling headless runs apart relies on `CLAUDE_CODE_SESSION_ATTENDED` and `CLAUDE_CODE_ENTRYPOINT`. These were observed, not documented.
 - CLI output and the generated `CLAUDE.md` block are in English, or Korean when `HARNIST_LANG=ko` or a Korean system locale is set. Slash-command instructions are in English; Claude answers in your language either way.
 
 ## Development
 
 ```bash
-python3 -m unittest tests.test_harnist      # 56 tests
+python3 -m unittest tests.test_harnist      # 58 tests
 python3 harnist.py demo --dir /tmp/harnist-demo
 ```
 

@@ -695,5 +695,28 @@ class DemoTest(unittest.TestCase):
         self.assertEqual(len(list((paths["home"] / "projects").glob("*/*.jsonl"))) > 5, True)
 
 
+class ListingTest(GlobalFixture):
+    def test_listing_parsed_from_probe_transcript_and_unused_builtins_recommended(self):
+        listing = "- dataviz: Draw charts with care.\n  Second line.\n- harness:harness: Build a harness.\n- solo: one repo skill\n- tiny: x"
+        write(self.home / "projects/-p-harnist-probe/a.jsonl", json.dumps({"type": "attachment", "attachment": {"type": "skill_listing", "content": listing}}) + "\n")
+        rows = {r["name"]: r for r in harnist.listing_report(36500)}
+        self.assertEqual(rows["dataviz"]["origin"], "builtin")
+        self.assertEqual(rows["solo"]["origin"], "user")
+        self.assertEqual(rows["solo"]["calls"], 1)
+        names = [r["name"] for r in harnist.listing_recs(list(rows.values()), min_chars=10)]
+        self.assertIn("dataviz", names)          # 안 쓰는 내장 스킬
+        self.assertNotIn("solo", names)          # 사용자 스킬은 demote 경로
+        self.assertNotIn("tiny", names)          # 설명이 짧아 숨길 이득이 없음
+
+    def test_set_skill_overrides_only_touches_that_key_and_backs_up(self):
+        harnist.set_skill_overrides(["dataviz"], "name-only", log=lambda *_: None)
+        d = json.loads((self.home / "settings.json").read_text())
+        self.assertEqual(d["skillOverrides"], {"dataviz": "name-only"})
+        self.assertTrue(d["enabledPlugins"]["p@mk"])
+        self.assertTrue(list((self.home / ".harnist/backups").glob("settings-*.json")))
+        harnist.set_skill_overrides(["dataviz"], None, log=lambda *_: None)
+        self.assertNotIn("skillOverrides", json.loads((self.home / "settings.json").read_text()))
+
+
 if __name__ == "__main__":
     unittest.main()

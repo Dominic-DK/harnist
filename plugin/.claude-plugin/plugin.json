@@ -1,0 +1,11 @@
+{
+  "name": "harnist",
+  "version": "0.4.0",
+  "description": "Tuist-style harness modules for Claude Code — per-project skills/plugins/MCP, audit by real usage, dashboard. Commands are user-invoked only (zero always-on context).",
+  "author": {
+    "name": "Dominic Lee"
+  },
+  "homepage": "https://github.com/Dominic-DK/harnist",
+  "repository": "https://github.com/Dominic-DK/harnist",
+  "license": "MIT"
+}

@@ -1,0 +1,10 @@
+# 개인 데이터 — 공개 레포에 올리지 않는다 (레지스트리·글로벌 매니페스트는 ~/.harnist/ 로도 둘 수 있다)
+registry/
+manifests/
+.trash/
+examples/research-repo/
+# 생성물·캐시
+__pycache__/
+*.pyc
+.DS_Store
+docs/img/*.tmp.png

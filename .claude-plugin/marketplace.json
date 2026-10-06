@@ -1,0 +1,16 @@
+{
+  "name": "harnist",
+  "owner": {
+    "name": "Dominic Lee"
+  },
+  "metadata": {
+    "description": "harnist — Tuist-style harness modules and dashboard for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "harnist",
+      "source": "./plugin",
+      "description": "Per-project skills, plugins and MCP for Claude Code: audit the global scope by real usage, archive with stubs, generate .claude/ from modules, and see it all in a local dashboard."
+    }
+  ]
+}

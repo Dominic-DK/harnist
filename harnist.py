@@ -34,6 +34,41 @@ END = "<!-- harnist:end -->"
 BLOCK_KEY = "CLAUDE.md#harnist"
 
 
+# ---------------------------------------------------------------- i18n
+# 사용자에게 보이는 문구는 한국어 원문을 키로 tr() 에 넘긴다. 기본은 영어(아래 EN 사전), 로케일이 ko 면 원문.
+
+
+def ui_lang() -> str:
+    """HARNIST_LANG → LC_ALL → LC_MESSAGES → LANG 중 처음 값이 있는 것이 ko 로 시작하면 "ko", 아니면 "en". 매번 읽는다."""
+    for var in ("HARNIST_LANG", "LC_ALL", "LC_MESSAGES", "LANG"):
+        v = os.environ.get(var)
+        if v:
+            return "ko" if v.lower().startswith("ko") else "en"
+    if sys.platform == "win32":
+        import locale
+        try:
+            loc = locale.getlocale()[0] or ""
+        except ValueError:
+            loc = ""
+        if loc.lower().startswith("ko"):
+            return "ko"
+    return "en"
+
+
+def tr(ko: str, **kw) -> str:
+    """ko = 한국어 템플릿. 영어 로케일이면 EN 의 번역을, 없으면 원문을 쓴다. 자리표시자는 같다."""
+    return (ko if ui_lang() == "ko" else EN.get(ko, ko)).format(**kw)
+
+
+# usage_report 의 verdict 값은 웹 UI·recommendations 가 읽는 데이터 키다 — 값은 그대로 두고 CLI 표시만 바꾼다.
+VERDICT_EN = {"미사용": "Unused", "제한": "Narrow", "호출 기록 없음": "No calls", "공통": "Common",
+              "보관됨": "Archived", "상시 실행": "Always runs"}
+
+
+def verdict_label(v: str) -> str:
+    return v if ui_lang() == "ko" else VERDICT_EN.get(v, v)
+
+
 def block_key(fname: str) -> str:
     return f"{fname}#harnist"
 
@@ -70,7 +105,7 @@ def load_yaml(path: Path) -> dict:
     try:
         return yaml.safe_load(path.read_text()) or {}
     except FileNotFoundError:
-        raise HarnistError(f"파일 없음: {path}")
+        raise HarnistError(tr("파일 없음: {path}", path=path))
 
 
 # ---------------------------------------------------------------- registry
@@ -115,18 +150,18 @@ def load_registry(dirs: list[Path], local: Path | None = None) -> dict[str, Modu
         dirs = [*dirs, local]
     for root in dirs:
         if not root.is_dir():
-            raise HarnistError(f"레지스트리 디렉터리 없음: {root}")
+            raise HarnistError(tr("레지스트리 디렉터리 없음: {path}", path=root))
         for f in sorted(root.rglob("module.yaml")):
             spec = load_yaml(f)
             name = f.parent.relative_to(root).as_posix()
             if spec.get("name", name) != name:
-                raise HarnistError(f"{f}: name '{spec.get('name')}' 이 경로 '{name}' 과 다름")
+                raise HarnistError(tr("{file}: name '{name}' 이 경로 '{path}' 과 다름", file=f, name=spec.get("name"), path=name))
             if spec.get("layer", "domain") not in LAYERS:
-                raise HarnistError(f"{name}: 알 수 없는 layer '{spec.get('layer')}'")
+                raise HarnistError(tr("{name}: 알 수 없는 layer '{layer}'", name=name, layer=spec.get("layer")))
             if (root == local) != (spec.get("layer") == "project"):
-                raise HarnistError(f"{name}: project 계층 모듈은 레포의 .harnist/modules 에만, 그 밖의 계층은 공유 레지스트리에만 둔다")
+                raise HarnistError(tr("{name}: project 계층 모듈은 레포의 .harnist/modules 에만, 그 밖의 계층은 공유 레지스트리에만 둔다", name=name))
             if name in mods:
-                raise HarnistError(f"모듈 중복: {name} ({mods[name].dir} / {f.parent})")
+                raise HarnistError(tr("모듈 중복: {name} ({a} / {b})", name=name, a=mods[name].dir, b=f.parent))
             mods[name] = Module(name, f.parent, spec)
     return mods
 
@@ -138,19 +173,18 @@ def resolve(roots: list[str], reg: dict[str, Module]) -> list[Module]:
 
     def visit(name: str, chain: list[str]) -> None:
         if name not in reg:
-            raise HarnistError(f"모듈 없음: {name} (경로: {' → '.join(chain)})")
+            raise HarnistError(tr("모듈 없음: {name} (경로: {path})", name=name, path=" → ".join(chain)))
         if state.get(name) == 1:
-            raise HarnistError(f"순환 의존: {' → '.join(chain + [name])}")
+            raise HarnistError(tr("순환 의존: {path}", path=" → ".join(chain + [name])))
         if state.get(name) == 2:
             return
         state[name] = 1
         m = reg[name]
         for dep in m.requires:
             if dep in reg and LAYERS[reg[dep].layer] > LAYERS[m.layer]:
-                raise HarnistError(
-                    f"계층 역전: {name}({m.layer}) 이 {dep}({reg[dep].layer}) 에 의존 — "
-                    "하위 계층은 상위 계층을 알 수 없다"
-                )
+                raise HarnistError(tr(
+                    "계층 역전: {name}({layer}) 이 {dep}({dep_layer}) 에 의존 — 하위 계층은 상위 계층을 알 수 없다",
+                    name=name, layer=m.layer, dep=dep, dep_layer=reg[dep].layer))
             visit(dep, chain + [name])
         state[name] = 2
         order.append(m)
@@ -203,7 +237,7 @@ def deep_merge(dst: dict, src: dict, origin: str, owners: dict, path: str = "", 
             dst[k] += [x for x in v if x not in dst[k]]
         elif dst[k] != v:
             if not override:
-                raise HarnistError(f"settings 충돌 {p}: {owners.get(p, '?')} 와 {origin} 의 값이 다름")
+                raise HarnistError(tr("settings 충돌 {key}: {a} 와 {b} 의 값이 다름", key=p, a=owners.get(p, "?"), b=origin))
             dst[k] = copy.deepcopy(v)
 
 
@@ -230,7 +264,7 @@ def apply_rewrites(rel: str, data: bytes, rules: list[dict], vars_: dict[str, st
 def set_model(text: str, model: str, where: str) -> str:
     m = re.match(r"---\n(.*?)\n---\n", text, re.S)
     if not m:
-        raise HarnistError(f"{where}: frontmatter 가 없어 model 을 지정할 수 없음")
+        raise HarnistError(tr("{where}: frontmatter 가 없어 model 을 지정할 수 없음", where=where))
     lines = m.group(1).split("\n")
     idx = [i for i, l in enumerate(lines) if l.startswith("model:")]
     if idx:
@@ -255,11 +289,11 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
     base = manifest_path.parent
     scope = man.get("scope", "project")
     if scope not in ("project", "user"):
-        raise HarnistError(f"알 수 없는 scope: {scope}")
+        raise HarnistError(tr("알 수 없는 scope: {scope}", scope=scope))
     if out is None and man.get("target"):
         out = expand(man["target"], base)
     if scope == "user" and out is None:
-        raise HarnistError("user 스코프는 매니페스트 target 이나 --out 으로 출력 위치를 명시해야 한다")
+        raise HarnistError(tr("user 스코프는 매니페스트 target 이나 --out 으로 출력 위치를 명시해야 한다"))
 
     reg = load_registry(shared_registries(man, base), local_registry(base))
     mods = resolve(man.get("modules", []), reg)
@@ -284,7 +318,7 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
 
     def emit(rel: str, data: bytes, origin: str) -> None:
         if rel in providers:
-            raise HarnistError(f"출력 충돌: {rel} 을 {providers[rel]} 와 {origin} 가 동시에 제공")
+            raise HarnistError(tr("출력 충돌: {path} 을 {a} 와 {b} 가 동시에 제공", path=rel, a=providers[rel], b=origin))
         providers[rel] = origin
         plan.files[rel] = data
 
@@ -302,14 +336,14 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
         for s in spec.get("skills", []):
             d = src / "skills" / s
             if not (d / "SKILL.md").is_file():
-                raise HarnistError(f"{m.name}: 스킬 없음 {d}/SKILL.md")
+                raise HarnistError(tr("{module}: 스킬 없음 {path}/SKILL.md", module=m.name, path=d))
             for f, rel in iter_files(d):
                 take(f, f"skills/{s}/{rel}", f"{cd}skills/{s}/{rel}")
             skills.add(s)
         for a in spec.get("agents", []):
             f = src / "agents" / f"{a}.md"
             if not f.is_file():
-                raise HarnistError(f"{m.name}: 에이전트 없음 {f}")
+                raise HarnistError(tr("{module}: 에이전트 없음 {path}", module=m.name, path=f))
             take(f, f"agents/{a}.md", f"{cd}agents/{a}.md")
             agents[a] = f"{cd}agents/{a}.md"
         for p in spec.get("plugins", []):
@@ -321,7 +355,7 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
             lock_mods.setdefault("@marketplaces", {})[mk] = marketplace_commit(mk)
         for name, cfg in (spec.get("mcp") or {}).items():
             if name in mcp and mcp[name] != cfg:
-                raise HarnistError(f"MCP 충돌: {name} 을 여러 모듈이 다르게 정의")
+                raise HarnistError(tr("MCP 충돌: {name} 을 여러 모듈이 다르게 정의", name=name))
             mcp[name] = cfg
         if spec.get("settings"):
             deep_merge(settings, spec["settings"], m.name, owners)
@@ -333,24 +367,22 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
     spawn = man.get("spawn") or {}
     for a, model in (spawn.get("routing") or {}).items():
         if a not in agents:
-            raise HarnistError(f"spawn.routing: 에이전트 '{a}' 를 제공하는 모듈이 없음")
+            raise HarnistError(tr("spawn.routing: 에이전트 '{agent}' 를 제공하는 모듈이 없음", agent=a))
         rel = agents[a]
         plan.files[rel] = set_model(plan.files[rel].decode(), model, rel).encode()
     teams = man.get("teams") or {}
     for t, cfg in teams.items():
         for mem in cfg.get("members", []):
             if mem not in agents and mem not in skills:
-                raise HarnistError(f"teams.{t}: 멤버 '{mem}' 가 제공된 에이전트·스킬에 없음")
+                raise HarnistError(tr("teams.{team}: 멤버 '{member}' 가 제공된 에이전트·스킬에 없음", team=t, member=mem))
     ov = man.get("overrides") or {}
     if ov.get("settings"):
         deep_merge(settings, ov["settings"], "overrides", owners, override=True)
     mcp.update(ov.get("mcp") or {})
 
     if scope == "user" and (settings or mcp):
-        raise HarnistError(
-            "user 스코프는 skills·agents·CLAUDE.md 블록만 관리한다 — "
-            "플러그인·settings·MCP 를 쓰는 모듈은 project 매니페스트에서 사용"
-        )
+        raise HarnistError(tr(
+            "user 스코프는 skills·agents·CLAUDE.md 블록만 관리한다 — 플러그인·settings·MCP 를 쓰는 모듈은 project 매니페스트에서 사용"))
     if settings:
         plan.files[f"{cd}settings.json"] = (json.dumps(settings, ensure_ascii=False, indent=2) + "\n").encode()
     if mcp:
@@ -361,13 +393,13 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
     mirrors = man.get("mirror") or []
     for f in mirrors:
         if "/" in f or not f.endswith(".md") or f == "CLAUDE.md":
-            raise HarnistError(f"mirror 는 레포 루트의 .md 파일 이름이어야 함: {f}")
+            raise HarnistError(tr("mirror 는 레포 루트의 .md 파일 이름이어야 함: {file}", file=f))
     if mirrors and scope == "user":
-        raise HarnistError("user 스코프는 mirror 를 지원하지 않는다 (각 에이전트의 전역 위치가 다름)")
+        raise HarnistError(tr("user 스코프는 mirror 를 지원하지 않는다 (각 에이전트의 전역 위치가 다름)"))
     plan.mirrors = list(mirrors)
     plan.links = man.get("links", "refuse")
     if plan.links not in ("refuse", "skip", "follow"):
-        raise HarnistError(f"links 는 refuse | skip | follow 중 하나: {plan.links}")
+        raise HarnistError(tr("links 는 refuse | skip | follow 중 하나: {value}", value=plan.links))
     if plan.links == "skip":
         plan.skipped = sorted(r for r in plan.files if through_link(root, r))
         for r in plan.skipped:
@@ -379,10 +411,10 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
 def render_block(mods, fragments, spawn, teams, local_md) -> str:
     out = [
         BEGIN,
-        "<!-- 생성물: harness.yaml 을 고치고 `harnist generate` 로 재생성한다. 직접 고치면 check 가 드리프트로 잡는다. -->",
-        "## 하네스 모듈",
+        tr("<!-- 생성물: harness.yaml 을 고치고 `harnist generate` 로 재생성한다. 직접 고치면 check 가 드리프트로 잡는다. -->"),
+        tr("## 하네스 모듈"),
         "",
-        "| 모듈 | 계층 | 제공 |",
+        tr("| 모듈 | 계층 | 제공 |"),
         "| --- | --- | --- |",
     ]
     for m in mods:
@@ -390,25 +422,28 @@ def render_block(mods, fragments, spawn, teams, local_md) -> str:
         parts = [f"{k} {len(s[k])}" for k in ("skills", "agents", "plugins") if s.get(k)]
         if s.get("mcp"):
             parts.append(f"mcp {len(s['mcp'])}")
-        out.append(f"| {m.name} | {m.layer} | {', '.join(parts) or '규칙만'} |")
+        provides = ", ".join(parts) or tr("규칙만")
+        out.append(f"| {m.name} | {m.layer} | {provides} |")
     for m, frag in fragments:
         out += ["", f"### {m.name}", "", frag]
     if teams:
-        out += ["", "### 팀"]
+        out += ["", tr("### 팀")]
         for t, cfg in teams.items():
-            lead = f" · 리드 `{cfg['lead']}`" if cfg.get("lead") else ""
-            out.append(f"\n**{t}** — {cfg.get('purpose', '')}  \n구성: {', '.join(cfg.get('members', []))}{lead}")
+            lead = tr(" · 리드 `{lead}`", lead=cfg["lead"]) if cfg.get("lead") else ""
+            out.append("\n" + tr("**{team}** — {purpose}  \n구성: {members}{lead}", team=t, purpose=cfg.get("purpose", ""),
+                                  members=", ".join(cfg.get("members", [])), lead=lead))
     if spawn.get("max_parallel_agents") or spawn.get("rules") or spawn.get("routing"):
-        out += ["", "### 스폰 규칙", ""]
+        out += ["", tr("### 스폰 규칙"), ""]
         if spawn.get("max_parallel_agents"):
-            out.append(f"한 번에 동시에 띄우는 서브에이전트는 {spawn['max_parallel_agents']}개를 넘기지 않는다.")
+            out.append(tr("한 번에 동시에 띄우는 서브에이전트는 {n}개를 넘기지 않는다.", n=spawn["max_parallel_agents"]))
         if spawn.get("routing"):
-            out.append("모델 라우팅(에이전트 frontmatter 에 반영됨): " + ", ".join(f"{a}→{m}" for a, m in spawn["routing"].items()))
+            out.append(tr("모델 라우팅(에이전트 frontmatter 에 반영됨): {routes}",
+                          routes=", ".join(f"{a}→{m}" for a, m in spawn["routing"].items())))
         if spawn.get("rules"):
             out.append("")
             out += [f"- {r}" for r in spawn["rules"]]
     if local_md:
-        out += ["", "### 이 레포 고유", "", local_md]
+        out += ["", tr("### 이 레포 고유"), "", local_md]
     out.append(END)
     return "\n".join(out)
 
@@ -453,10 +488,10 @@ def compute_actions(plan: Plan, ledger: dict, adopt: bool = False, force: bool =
     actions, conflicts = [], []
     owner = ledger_manifest(plan)
     if owner and Path(owner) != plan.manifest_path and not force:
-        return [], [f"이 출력 폴더는 다른 매니페스트가 관리한다: {tilde(owner)} (--force 로 넘겨받기)"]
+        return [], [tr("이 출력 폴더는 다른 매니페스트가 관리한다: {path} (--force 로 넘겨받기)", path=tilde(owner))]
     for rel, data in plan.files.items():
         if plan.links != "follow" and through_link(plan.root, rel):
-            conflicts.append(f"심볼릭 링크 너머 경로: {rel} — 다른 도구가 관리하는 곳 (매니페스트 links: skip 으로 건너뛰기)")
+            conflicts.append(tr("심볼릭 링크 너머 경로: {path} — 다른 도구가 관리하는 곳 (매니페스트 links: skip 으로 건너뛰기)", path=rel))
             continue
         p = plan.root / rel
         if not p.exists():
@@ -469,11 +504,11 @@ def compute_actions(plan: Plan, ledger: dict, adopt: bool = False, force: bool =
         elif rel in ledger and (cur == ledger[rel] or force):
             actions.append(("update", rel))
         elif rel in ledger:
-            conflicts.append(f"수동 수정됨: {rel} (--force 로 덮어쓰기)")
+            conflicts.append(tr("수동 수정됨: {path} (--force 로 덮어쓰기)", path=rel))
         elif adopt:
             actions.append(("update", rel))
         else:
-            conflicts.append(f"관리 밖 파일: {rel} (--adopt 로 편입)")
+            conflicts.append(tr("관리 밖 파일: {path} (--adopt 로 편입)", path=rel))
     for rel, h in ledger.items():
         if is_block_key(rel) or rel in plan.files:
             continue
@@ -484,7 +519,7 @@ def compute_actions(plan: Plan, ledger: dict, adopt: bool = False, force: bool =
             if sha(p.read_bytes()) == h or force:
                 actions.append(("delete", rel))
             else:
-                conflicts.append(f"수동 수정된 파일이 더 이상 생성되지 않음: {rel} (--force 로 삭제)")
+                conflicts.append(tr("수동 수정된 파일이 더 이상 생성되지 않음: {path} (--force 로 삭제)", path=rel))
     blocks = plan.blocks
     for fname, block in blocks.items():
         key, md = block_key(fname), plan.root / fname
@@ -497,11 +532,11 @@ def compute_actions(plan: Plan, ledger: dict, adopt: bool = False, force: bool =
         elif key in ledger and (sha(cur.encode()) == ledger[key] or force):
             actions.append(("update", key))
         elif key in ledger:
-            conflicts.append(f"수동 수정됨: {fname} 의 harnist 블록 (--force 로 덮어쓰기)")
+            conflicts.append(tr("수동 수정됨: {file} 의 harnist 블록 (--force 로 덮어쓰기)", file=fname))
         elif adopt:
             actions.append(("update", key))
         else:
-            conflicts.append(f"관리 밖 harnist 블록: {fname} (--adopt 로 편입)")
+            conflicts.append(tr("관리 밖 harnist 블록: {file} (--adopt 로 편입)", file=fname))
     for key, h in ledger.items():
         fname = key[: -len("#harnist")]
         if not is_block_key(key) or fname in blocks:
@@ -513,7 +548,7 @@ def compute_actions(plan: Plan, ledger: dict, adopt: bool = False, force: bool =
         if sha(cur.encode()) == h or force:
             actions.append(("delete", key))
         else:
-            conflicts.append(f"수동 수정된 harnist 블록이 더 이상 생성되지 않음: {fname} (--force 로 제거)")
+            conflicts.append(tr("수동 수정된 harnist 블록이 더 이상 생성되지 않음: {file} (--force 로 제거)", file=fname))
     return actions, conflicts
 
 
@@ -525,7 +560,7 @@ def lock_diff(plan: Plan) -> list[str]:
     try:
         old = json.loads(lock_path(plan).read_text())["modules"]
     except FileNotFoundError:
-        return ["harness.lock 없음"]
+        return [tr("harness.lock 없음")]
     new = plan.lock["modules"]
     diffs = []
     for k in sorted(set(old) | set(new)):
@@ -537,9 +572,9 @@ def lock_diff(plan: Plan) -> list[str]:
             if k == "@marketplaces":
                 for mk in sorted(set(old[k]) | set(new[k])):
                     if old[k].get(mk) != new[k].get(mk):
-                        diffs.append(f"~ 마켓플레이스 {mk}: {str(old[k].get(mk))[:7]} → {str(new[k].get(mk))[:7]}")
+                        diffs.append(tr("~ 마켓플레이스 {name}: {a} → {b}", name=mk, a=str(old[k].get(mk))[:7], b=str(new[k].get(mk))[:7]))
             else:
-                diffs.append(f"~ {k} (내용 변경)")
+                diffs.append(tr("~ {name} (내용 변경)", name=k))
     return diffs
 
 
@@ -640,14 +675,14 @@ def init_manifest(d: Path, modules: list[str]) -> Path:
     d = d.resolve()
     mp = d / "harness.yaml"
     if mp.exists():
-        raise HarnistError(f"이미 있음: {mp}")
+        raise HarnistError(tr("이미 있음: {path}", path=mp))
     reg = load_registry(shared_registries({}, d), local_registry(d))
     missing = [m for m in modules if m not in reg]
     if missing:
-        raise HarnistError(f"레지스트리에 없는 모듈: {', '.join(missing)}")
+        raise HarnistError(tr("레지스트리에 없는 모듈: {names}", names=", ".join(missing)))
     body = "".join(f"  - {m}\n" for m in modules)
     mp.write_text(
-        "# harnist 매니페스트 — 이 레포가 쓰는 하네스 모듈 선언. .claude/ 는 `harnist generate` 의 생성물이다.\n"
+        tr("# harnist 매니페스트 — 이 레포가 쓰는 하네스 모듈 선언. .claude/ 는 `harnist generate` 의 생성물이다.") + "\n"
         + (f"modules:\n{body}" if body else "modules: []\n")
     )
     return mp
@@ -661,16 +696,16 @@ def promote(mp: Path, name: str, to: str) -> Path:
     shared = shared_registries(man, base)
     reg = load_registry(shared, local)
     if name not in reg or reg[name].layer != "project":
-        raise HarnistError(f"{name}: 이 레포의 project 모듈이 아님")
+        raise HarnistError(tr("{name}: 이 레포의 project 모듈이 아님", name=name))
     layer = to.split("/")[0]
     if layer not in ("base", "domain"):
-        raise HarnistError(f"승격 대상은 base/… 또는 domain/… 이어야 함: {to}")
+        raise HarnistError(tr("승격 대상은 base/… 또는 domain/… 이어야 함: {to}", to=to))
     if to in reg:
-        raise HarnistError(f"이미 있는 모듈 이름: {to}")
+        raise HarnistError(tr("이미 있는 모듈 이름: {name}", name=to))
     m = reg[name]
     local_deps = [d for d in m.requires if reg[d].layer == "project"]
     if local_deps:
-        raise HarnistError(f"project 모듈에 의존하고 있어 먼저 승격해야 함: {', '.join(local_deps)}")
+        raise HarnistError(tr("project 모듈에 의존하고 있어 먼저 승격해야 함: {names}", names=", ".join(local_deps)))
     dest = shared[0] / to
     shutil.copytree(m.dir, dest)
     spec = dict(m.spec, name=to, layer=layer)
@@ -972,7 +1007,7 @@ def _modules_span(text: str) -> tuple[int, int, str, bool]:
     """modules: 블록의 (시작, 끝, 항목 들여쓰기, 인라인 빈 리스트 여부)."""
     m = re.search(r"(?m)^modules:[ \t]*(\[\])?[ \t]*(#.*)?(\n|$)", text)
     if not m:
-        raise HarnistError("modules: 블록을 찾지 못해 자동 편집할 수 없음 — 직접 추가")
+        raise HarnistError(tr("modules: 블록을 찾지 못해 자동 편집할 수 없음 — 직접 추가"))
     if m.group(1):
         return m.start(), m.end(), "  ", True
     end, indent = m.end(), None
@@ -1010,9 +1045,9 @@ def _manifest_modules_edit(mp: Path, add: str | None = None, remove: str | None 
     try:
         got = (yaml.safe_load(new) or {}).get("modules") or []
     except yaml.YAMLError as e:
-        raise HarnistError(f"{mp}: 자동 편집 결과가 YAML 이 아님 — 파일은 그대로 두었다 ({e})")
+        raise HarnistError(tr("{path}: 자동 편집 결과가 YAML 이 아님 — 파일은 그대로 두었다 ({error})", path=mp, error=e))
     if got != want:
-        raise HarnistError(f"{mp}: 자동 편집 결과가 예상과 다름 — 파일은 그대로 두었다")
+        raise HarnistError(tr("{path}: 자동 편집 결과가 예상과 다름 — 파일은 그대로 두었다", path=mp))
     tmp = mp.with_suffix(".yaml.harnist-tmp")
     tmp.write_text(new)
     os.replace(tmp, mp)
@@ -1027,7 +1062,7 @@ def attach(repo: Path, module: str) -> Path:
         return init_manifest(repo, [module])
     reg = load_registry(shared_registries(load_yaml(mp), repo), local_registry(repo))
     if module not in reg:
-        raise HarnistError(f"레지스트리에 없는 모듈: {module}")
+        raise HarnistError(tr("레지스트리에 없는 모듈: {names}", names=module))
     _manifest_modules_edit(mp, add=module)
     return mp
 
@@ -1035,7 +1070,7 @@ def attach(repo: Path, module: str) -> Path:
 def detach(repo: Path, module: str) -> Path:
     mp = repo.expanduser().resolve() / "harness.yaml"
     if not _manifest_modules_edit(mp, remove=module):
-        raise HarnistError(f"{mp}: {module} 이 직접 선언되어 있지 않음")
+        raise HarnistError(tr("{path}: {module} 이 직접 선언되어 있지 않음", path=mp, module=module))
     return mp
 
 
@@ -1071,19 +1106,24 @@ def write_stub(name: str, module: str, skill_dir: Path, desc: str, origin: str) 
         trash.mkdir(parents=True, exist_ok=True)
         shutil.move(str(d), str(trash / name))
     elif d.exists() and not frontmatter(d / "SKILL.md").get("harnist-stub"):
-        raise HarnistError(f"{tilde(d)} 에 스텁이 아닌 스킬이 있어 덮어쓰지 않는다")
+        raise HarnistError(tr("{path} 에 스텁이 아닌 스킬이 있어 덮어쓰지 않는다", path=tilde(d)))
     d.mkdir(parents=True, exist_ok=True)
     short = re.sub(r"\s+", " ", desc).strip()[:70]
-    fm = yaml.safe_dump({"name": name, "description": f"(보관됨) {short}", "disable-model-invocation": True,
+    fm = yaml.safe_dump({"name": name, "description": tr("(보관됨) {desc}", desc=short), "disable-model-invocation": True,
                          "harnist-stub": module, "harnist-origin": origin}, allow_unicode=True, sort_keys=False)
-    body = f"""# {name} — harnist 레지스트리에 보관된 스킬
-
-{time.strftime("%Y-%m-%d")} 전역 점검에서 사용 기록이 적어 전역에서 내리고 `{module}` 모듈로 보관했다. 사용자가 직접 불렀으니 그대로 수행한다.
-
-1. `{tilde(skill_dir)}/SKILL.md` 를 읽고 그 절차를 따른다. 이 스킬의 기준 디렉터리는 `{tilde(skill_dir)}/` 이다. 본문에 `~/.claude/skills/{name}/` 경로가 나오면 이 위치로 바꿔 읽는다.
-2. 사용자가 함께 준 인자는 이 메시지의 ARGUMENTS 에 있다.
-3. 작업이 끝나면 한 번만 묻는다. 이 레포에서 계속 쓰기(`harnist recall skill:{name} --attach .`), 전역으로 되돌리기(`harnist recall skill:{name} --global`), 지금처럼 두기 중 무엇을 원하는지. `harnist` 는 `python3 "$(cat ~/.claude/.harnist/home)/harnist.py"` 이다.
-"""
+    body = "\n".join([
+        tr("# {name} — harnist 레지스트리에 보관된 스킬", name=name),
+        "",
+        tr("{date} 전역 점검에서 사용 기록이 적어 전역에서 내리고 `{module}` 모듈로 보관했다. 사용자가 직접 불렀으니 그대로 수행한다.",
+           date=time.strftime("%Y-%m-%d"), module=module),
+        "",
+        tr("1. `{dir}/SKILL.md` 를 읽고 그 절차를 따른다. 이 스킬의 기준 디렉터리는 `{dir}/` 이다. 본문에 `~/.claude/skills/{name}/` 경로가 나오면 이 위치로 바꿔 읽는다.",
+           dir=tilde(skill_dir), name=name),
+        tr("2. 사용자가 함께 준 인자는 이 메시지의 ARGUMENTS 에 있다."),
+        tr("3. 작업이 끝나면 한 번만 묻는다. 이 레포에서 계속 쓰기(`harnist recall skill:{name} --attach .`), 전역으로 되돌리기(`harnist recall skill:{name} --global`), 지금처럼 두기 중 무엇을 원하는지. `harnist` 는 `python3 \"$(cat ~/.claude/.harnist/home)/harnist.py\"` 이다.",
+           name=name),
+        "",
+    ])
     (d / "SKILL.md").write_text(f"---\n{fm}---\n\n{body}")
     return d
 
@@ -1092,7 +1132,7 @@ def stub_info(name: str) -> dict:
     f = claude_home() / "skills" / name / "SKILL.md"
     fm = frontmatter(f) if f.exists() else {}
     if not fm.get("harnist-stub"):
-        raise HarnistError(f"skill:{name} 은 harnist 스텁이 아님 (보관된 적 없거나 이미 복귀됨)")
+        raise HarnistError(tr("skill:{name} 은 harnist 스텁이 아님 (보관된 적 없거나 이미 복귀됨)", name=name))
     return fm
 
 
@@ -1100,25 +1140,25 @@ def recall(item: str, to_global: bool, repos: list[Path], dry: bool = False) -> 
     """보관된 스킬을 다시 쓴다 — 레포에 연결하거나 전역으로 되돌린다."""
     kind, _, name = item.partition(":")
     if kind != "skill":
-        raise HarnistError("recall 은 스텁이 남는 skill 만 받는다 — 에이전트·플러그인·MCP 는 harnist attach <모듈> <레포> 로 연결한다")
+        raise HarnistError(tr("recall 은 스텁이 남는 skill 만 받는다 — 에이전트·플러그인·MCP 는 harnist attach <모듈> <레포> 로 연결한다"))
     fm = stub_info(name)
     module = fm["harnist-stub"]
     reg = load_registry([DEFAULT_REGISTRY])
     if module not in reg:
-        raise HarnistError(f"보관 모듈 {module} 이 레지스트리에 없음")
+        raise HarnistError(tr("보관 모듈 {module} 이 레지스트리에 없음", module=module))
     m = reg[module]
     log = []
     for r in repos:
-        log.append(f"연결: {tilde(r.expanduser().resolve())} ← {module}")
+        log.append(tr("연결: {repo} ← {module}", repo=tilde(r.expanduser().resolve()), module=module))
         if not dry:
             mp = attach(r, module) if not ((r.expanduser() / "harness.yaml").exists() and module in
                                            (load_yaml(r.expanduser() / "harness.yaml").get("modules") or [])) else r.expanduser() / "harness.yaml"
             rc = main(["generate", "-m", str(mp)])
             if rc:
-                log.append("  ! 생성 중단 — 이 레포에서 /harnist:sync 로 마무리")
+                log.append(tr("  ! 생성 중단 — 이 레포에서 /harnist:sync 로 마무리"))
     if to_global:
         if fm.get("harnist-origin") == "module":
-            log.append(f"전역 복귀: 스텁 제거 후 글로벌 매니페스트에 {module} 추가·재생성")
+            log.append(tr("전역 복귀: 스텁 제거 후 글로벌 매니페스트에 {module} 추가·재생성", module=module))
             if not dry:
                 for sk in m.spec.get("skills", []):
                     sd = claude_home() / "skills" / sk
@@ -1128,12 +1168,12 @@ def recall(item: str, to_global: bool, repos: list[Path], dry: bool = False) -> 
                 plan = build_plan(GLOBAL_MANIFEST, claude_home())
                 actions, conflicts = compute_actions(plan, read_ledger(plan))
                 if conflicts:
-                    raise HarnistError("글로벌 재생성 충돌: " + "; ".join(conflicts))
+                    raise HarnistError(tr("글로벌 재생성 충돌: {conflicts}", conflicts="; ".join(conflicts)))
                 apply(plan, actions, read_ledger(plan))
                 write_lock(plan)
         else:
             src = m.source / "skills" / name
-            log.append(f"전역 복귀: {tilde(src)} → ~/.claude/skills/{name} (스텁 교체, 보관본은 레지스트리에 남김)")
+            log.append(tr("전역 복귀: {src} → ~/.claude/skills/{name} (스텁 교체, 보관본은 레지스트리에 남김)", src=tilde(src), name=name))
             if not dry:
                 dst = claude_home() / "skills" / name
                 shutil.rmtree(dst)
@@ -1149,36 +1189,37 @@ def demote(item: str, to: str | None, repos: list[Path], dry: bool = False) -> l
     log: list[str] = []
     kind, _, name = item.partition(":")
     if kind not in ("skill", "agent", "plugin", "mcp", "module"):
-        raise HarnistError(f"내릴 수 없는 종류: {kind} (skill·agent·plugin·mcp·module) — 훅은 settings.json 에서 직접 옮긴다")
+        raise HarnistError(tr("내릴 수 없는 종류: {kind} (skill·agent·plugin·mcp·module) — 훅은 settings.json 에서 직접 옮긴다", kind=kind))
     reg_root = DEFAULT_REGISTRY
 
     if kind == "module":
         if name not in (load_yaml(GLOBAL_MANIFEST).get("modules") or []):
-            raise HarnistError(f"글로벌 매니페스트에 {name} 이 없음")
+            raise HarnistError(tr("글로벌 매니페스트에 {name} 이 없음", name=name))
         target = name
     else:
         if not to or to.split("/")[0] not in ("base", "domain"):
-            raise HarnistError("--to base/… 또는 domain/… 으로 보관할 모듈 이름을 정한다")
+            raise HarnistError(tr("--to base/… 또는 domain/… 으로 보관할 모듈 이름을 정한다"))
         target = to
         items = {(i["kind"], i["name"]): i for i in global_items()}
         it = items.get((kind, name))
         if not it:
-            raise HarnistError(f"전역에 없는 항목: {item}")
+            raise HarnistError(tr("전역에 없는 항목: {item}", item=item))
         if it.get("stub"):
-            raise HarnistError(f"{item} 은 이미 {it['stub']} 로 보관된 스텁")
+            raise HarnistError(tr("{item} 은 이미 {module} 로 보관된 스텁", item=item, module=it["stub"]))
         if it["module"]:
-            raise HarnistError(f"{item} 은 harnist 글로벌 모듈 {it['module']} 의 일부 — module:{it['module']} 로 내린다")
+            raise HarnistError(tr("{item} 은 harnist 글로벌 모듈 {module} 의 일부 — module:{module} 로 내린다", item=item, module=it["module"]))
         d = reg_root / target
         spec = load_yaml(d / "module.yaml") if (d / "module.yaml").exists() else {
             "name": target, "layer": target.split("/")[0], "description": it["desc"][:80]}
         if spec.get("source"):
-            raise HarnistError(f"{target} 은 외부 원본을 가리키는 모듈이라 내용을 더할 수 없음")
+            raise HarnistError(tr("{module} 은 외부 원본을 가리키는 모듈이라 내용을 더할 수 없음", module=target))
         if kind == "mcp":
             cfg = (claude_json().get("mcpServers") or {})[name]
             loose = " ".join(map(str, cfg.get("args") or [])) + " " + str(cfg.get("url", ""))
             if it.get("secret") or SECRET_RE.search(loose) or re.search(r"[?&](token|key|secret)=", loose, re.I):
-                raise HarnistError(f"MCP {name} 설정에 env/headers 가 있어 레지스트리(git)에 그대로 옮기지 않는다 — "
-                                   "값을 ${환경변수} 로 바꾼 설정으로 모듈을 직접 만들고 claude mcp remove 로 전역에서 뗀다")
+                raise HarnistError(tr(
+                    "MCP {name} 설정에 env/headers 가 있어 레지스트리(git)에 그대로 옮기지 않는다 — 값을 ${{환경변수}} 로 바꾼 설정으로 모듈을 직접 만들고 claude mcp remove 로 전역에서 뗀다",
+                    name=name))
             spec.setdefault("mcp", {})[name] = (claude_json().get("mcpServers") or {})[name]
         elif kind == "plugin":
             mk = name.split("@")[-1]
@@ -1193,7 +1234,7 @@ def demote(item: str, to: str | None, repos: list[Path], dry: bool = False) -> l
         else:
             key = kind + "s"
             if name in spec.get(key, []):
-                raise HarnistError(f"{target} 에 이미 {name} 이 있음")
+                raise HarnistError(tr("{module} 에 이미 {name} 이 있음", module=target, name=name))
             spec.setdefault(key, []).append(name)
             rules = spec.setdefault("rewrites", [])
             if not any("${install}" in r.get("replace", "") for r in rules):
@@ -1203,9 +1244,9 @@ def demote(item: str, to: str | None, repos: list[Path], dry: bool = False) -> l
             src_path = claude_home() / ("skills" if kind == "skill" else "agents") / (name if kind == "skill" else f"{name}.md")
             leaks = find_secrets([src_path])
             if leaks:
-                raise HarnistError("비밀값으로 보이는 문자열이 있어 git 레지스트리로 복사하지 않는다 — "
-                                   "환경변수로 바꾼 뒤 다시 실행: " + "; ".join(leaks))
-        log.append(f"보관: {kind} {name} → 레지스트리 {target}")
+                raise HarnistError(tr("비밀값으로 보이는 문자열이 있어 git 레지스트리로 복사하지 않는다 — 환경변수로 바꾼 뒤 다시 실행: {hits}",
+                                      hits="; ".join(leaks)))
+        log.append(tr("보관: {kind} {name} → 레지스트리 {module}", kind=kind, name=name, module=target))
         if not dry:
             d.mkdir(parents=True, exist_ok=True)
             if kind == "skill":
@@ -1218,24 +1259,24 @@ def demote(item: str, to: str | None, repos: list[Path], dry: bool = False) -> l
 
     # 필요한 레포에만 연결
     for r in repos:
-        log.append(f"연결: {tilde(r.expanduser().resolve())} ← {target}")
+        log.append(tr("연결: {repo} ← {module}", repo=tilde(r.expanduser().resolve()), module=target))
         if not dry:
             mp = attach(r, target)
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                 rc = main(["generate", "-m", str(mp)])
             if rc:
-                log.append(f"  ! 생성 중단 — 이 레포에서 /harnist:sync 로 마무리: {buf.getvalue().strip()}")
+                log.append(tr("  ! 생성 중단 — 이 레포에서 /harnist:sync 로 마무리: {output}", output=buf.getvalue().strip()))
 
     # 전역에서 떼기 (보관·연결 뒤에)
     if kind == "module":
-        log.append(f"전역 해제: 글로벌 매니페스트에서 {name} 제거 후 재생성")
+        log.append(tr("전역 해제: 글로벌 매니페스트에서 {name} 제거 후 재생성", name=name))
         if not dry:
             _manifest_modules_edit(GLOBAL_MANIFEST, remove=name)
             plan = build_plan(GLOBAL_MANIFEST, claude_home())
             actions, conflicts = compute_actions(plan, read_ledger(plan))
             if conflicts:
-                raise HarnistError("글로벌 재생성 충돌: " + "; ".join(conflicts))
+                raise HarnistError(tr("글로벌 재생성 충돌: {conflicts}", conflicts="; ".join(conflicts)))
             apply(plan, actions, read_ledger(plan))
             write_lock(plan)
             mod = load_registry([reg_root])[name]
@@ -1244,24 +1285,24 @@ def demote(item: str, to: str | None, repos: list[Path], dry: bool = False) -> l
                 # 링크면 그 너머(예: ~/.agents/skills)가 이미 전역용으로 경로가 맞춰진 공용 사본이다
                 sd = link.resolve() if link.is_symlink() else mod.source / "skills" / sk
                 write_stub(sk, name, sd, str(frontmatter(sd / "SKILL.md").get("description", "")), "module")
-                log.append(f"스텁: ~/.claude/skills/{sk} (/{sk} 로 부르면 보관본을 읽어 수행, 상시 비용 0)")
+                log.append(tr("스텁: ~/.claude/skills/{name} (/{name} 로 부르면 보관본을 읽어 수행, 상시 비용 0)", name=sk))
     elif kind == "mcp":
-        log.append(f"전역 해제: claude mcp remove {name} -s user")
+        log.append(tr("전역 해제: claude mcp remove {name} -s user", name=name))
         if not dry:
             r = subprocess.run(["claude", "mcp", "remove", name, "-s", "user"], capture_output=True, text=True)
             if r.returncode:
-                log.append(f"  ! 해제 실패 — 직접 실행: claude mcp remove {name} -s user ({r.stderr.strip()[:200]})")
+                log.append(tr("  ! 해제 실패 — 직접 실행: claude mcp remove {name} -s user ({error})", name=name, error=r.stderr.strip()[:200]))
     elif kind == "plugin":
-        log.append(f"전역 해제: claude plugin disable {name} --scope user")
+        log.append(tr("전역 해제: claude plugin disable {name} --scope user", name=name))
         if not dry:
             r = subprocess.run(["claude", "plugin", "disable", name, "--scope", "user"], capture_output=True, text=True)
             if r.returncode:
-                log.append(f"  ! 비활성화 실패 — 직접 실행: claude plugin disable {name} --scope user ({r.stderr.strip()[:200]})")
+                log.append(tr("  ! 비활성화 실패 — 직접 실행: claude plugin disable {name} --scope user ({error})", name=name, error=r.stderr.strip()[:200]))
     else:
         src = claude_home() / ("skills" if kind == "skill" else "agents") / (name if kind == "skill" else f"{name}.md")
         import time
         trash = Path(__file__).resolve().parent / ".trash" / time.strftime("%Y%m%d-%H%M%S") / src.parent.name
-        log.append(f"전역 해제: {tilde(src)} → {tilde(trash / src.name)} (백업 후 제거)")
+        log.append(tr("전역 해제: {src} → {dst} (백업 후 제거)", src=tilde(src), dst=tilde(trash / src.name)))
         if not dry:
             trash.mkdir(parents=True, exist_ok=True)
             desc = str(frontmatter(src / "SKILL.md" if kind == "skill" else src).get("description", ""))
@@ -1269,7 +1310,7 @@ def demote(item: str, to: str | None, repos: list[Path], dry: bool = False) -> l
             if kind == "skill":
                 write_stub(name, target, reg_root / target / "skills" / name, desc, "skill")
         if kind == "skill":
-            log.append(f"스텁: ~/.claude/skills/{name} (/{name} 로 부르면 보관본을 읽어 수행, 상시 비용 0)")
+            log.append(tr("스텁: ~/.claude/skills/{name} (/{name} 로 부르면 보관본을 읽어 수행, 상시 비용 0)", name=name))
     return log
 
 
@@ -1381,7 +1422,7 @@ def collect_state(root: Path, extra: list[Path] = ()) -> dict:
         rec["files"] = len(plan.files)
         ledger = read_ledger(plan)
         actions, conflicts = compute_actions(plan, ledger)
-        rec["issues"] = [f"{k} {r}" for k, r in actions if k != "adopt"] + conflicts + [f"락 {d}" for d in lock_diff(plan)]
+        rec["issues"] = [f"{k} {r}" for k, r in actions if k != "adopt"] + conflicts + [tr("락 {diff}", diff=d) for d in lock_diff(plan)]
         if not ledger:
             rec["status"] = "new"
         elif conflicts:
@@ -1522,7 +1563,7 @@ def run_probe(label: str, model: str | None) -> dict:
     import time
     claude = shutil.which("claude")
     if not claude:
-        raise HarnistError("claude CLI 를 PATH 에서 찾지 못함")
+        raise HarnistError(tr("claude CLI 를 PATH 에서 찾지 못함"))
     dbg = probe_dir() / f"{label}.debug.log"
     dbg.unlink(missing_ok=True)
     argv = [claude, "-p", BENCH_PROMPT, "--output-format", "json", "--debug-file", str(dbg)]
@@ -1539,10 +1580,10 @@ def run_probe(label: str, model: str | None) -> dict:
         except ValueError:
             continue
     if not res:
-        raise HarnistError(f"{label} 프로브 실패: {(r.stderr or r.stdout)[-300:]}")
+        raise HarnistError(tr("{label} 프로브 실패: {output}", label=label, output=(r.stderr or r.stdout)[-300:]))
     u = res.get("usage") or {}
     ctx = sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
-    return {"label": label, "model": next(iter(res.get("modelUsage") or {}), model or "기본"),
+    return {"label": label, "model": next(iter(res.get("modelUsage") or {}), model or tr("기본")),
             "wall_s": round(wall, 2), "ctx_tokens": ctx, "out_tokens": int(u.get("output_tokens") or 0),
             "cache_write": int(u.get("cache_creation_input_tokens") or 0), "cache_read": int(u.get("cache_read_input_tokens") or 0),
             "cost_usd": float(res.get("total_cost_usd") or 0), "ttft_ms": res.get("ttft_ms"),
@@ -1616,25 +1657,25 @@ def recommendations(rows: list[dict], root: Path) -> list[dict]:
 
 def run_bench(label: str, root: Path, log=print) -> dict:
     import time
-    log("정적 점검: 세션 기록에서 전역 항목 사용을 집계한다")
+    log(tr("정적 점검: 세션 기록에서 전역 항목 사용을 집계한다"))
     rows = usage_report(90)
     out = {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "label": label, "static": static_summary(rows),
            "recs": recommendations(rows, root), "sessions": {d: session_counts(d) for d in (30, 90)}, "probes": {}}
     for name, model in PROFILES.items():
-        log(f"{name} 세션 프로브: claude -p ({model or '기본 모델'}) 실행 중")
+        log(tr("{name} 세션 프로브: claude -p ({model}) 실행 중", name=name, model=model or tr("기본 모델")))
         try:
             out["probes"][name] = run_probe(name, model)
             p = out["probes"][name]
-            log(f"  기본 컨텍스트 {p['ctx_tokens']:,} 토큰 · ${p['cost_usd']:.4f} · 총 {p['wall_s']}초")
+            log(tr("  기본 컨텍스트 {tokens:,} 토큰 · ${cost:.4f} · 총 {wall}초", tokens=p["ctx_tokens"], cost=p["cost_usd"], wall=p["wall_s"]))
         except (HarnistError, subprocess.TimeoutExpired) as e:
-            log(f"  실패: {e}")
+            log(tr("  실패: {error}", error=e))
     d = bench_dir()
     f = d / f"{time.strftime('%Y%m%d-%H%M%S')}-{label}.json"
     f.write_text(json.dumps(out, ensure_ascii=False, indent=1))
     if not (d / "baseline.json").exists():
         (d / "baseline.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
-        log("첫 측정이라 기준선으로 저장했다")
-    log(f"저장: {tilde(f)}")
+        log(tr("첫 측정이라 기준선으로 저장했다"))
+    log(tr("저장: {path}", path=tilde(f)))
     return out
 
 
@@ -1699,9 +1740,9 @@ def apply_recs(items: list[dict], log=print) -> None:
             for line in demote(it["item"], it.get("to"), [Path(p).expanduser() for p in it.get("attach") or []]):
                 log(line)
         except HarnistError as e:
-            log(f"건너뜀 {it['item']}: {e}")
+            log(tr("건너뜀 {item}: {error}", item=it["item"], error=e))
     mark_audit()
-    log("점검 완료 기록을 갱신했다")
+    log(tr("점검 완료 기록을 갱신했다"))
 
 
 # ---------------------------------------------------------------- dashboard actions
@@ -1755,21 +1796,21 @@ def apply_modules(repo: Path, modules: list[str]) -> tuple[int, str]:
     try:
         for m in modules:
             mp = attach(repo, m)
-            log.append(f"연결: {m}")
+            log.append(tr("연결: {module}", module=m))
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             rc = main(["generate", "-m", str(repo / "harness.yaml")])
         log.append(buf.getvalue().strip())
         return rc, "\n".join(log)
     except HarnistError as e:
-        return 2, "\n".join([*log, f"오류: {e}"])
+        return 2, "\n".join([*log, tr("오류: {error}", error=e)])
 
 
-DESIGN_PROMPT = """너는 harnist 의 /harnist:init 절차를 대시보드 요청으로 무인 실행한다. 사용자는 실행 중에 답할 수 없다 — 질문하지 말고, 모호하면 덜 만드는 쪽으로 진행한다.
-절차 문서 {skill} 을 Read 로 읽고 따른다. 1~3단계의 파악·조회는 하되 사용자에게 묻는 부분은 아래 목적으로 대신한다.
-엔진 명령: {engine}
-이 프로젝트의 목적(사용자 입력): {purpose}
-제약: 이 폴더({repo}) 밖의 파일은 고치지 않는다. .claude/ 를 직접 쓰지 말고 .harnist/modules/project/ 와 harness.yaml 을 쓴 뒤 generate 한다. 관리 밖 파일 충돌이 나면 --adopt 하지 말고 멈춘 뒤 보고한다. 끝에 만든 것과 연결한 것을 5줄 이내로 요약한다."""
+DESIGN_PROMPT = """You are running harnist's /harnist:init procedure unattended, on a request from the dashboard. The user cannot answer during the run — do not ask questions; when something is unclear, build less rather than more.
+Read the procedure document {skill} with Read and follow it. Do the discovery and lookups in steps 1-3, but wherever the procedure asks the user, use the purpose below instead.
+Engine command: {engine}
+Project purpose (user input): {purpose}
+Constraints: do not modify files outside this folder ({repo}). Do not write .claude/ directly; write .harnist/modules/project/ and harness.yaml, then run generate. If generate reports a conflict with an unmanaged file, do not use --adopt; stop and report it. Finish with a summary of what you created and connected, in 5 lines or fewer, written in the same language as the project purpose."""
 
 
 class Jobs:
@@ -1784,7 +1825,7 @@ class Jobs:
         with self.lock:
             for j in self.jobs.values():
                 if j["repo"] == str(repo) and not j["done"]:
-                    raise HarnistError("이 레포에서 이미 실행 중인 작업이 있다")
+                    raise HarnistError(tr("이 레포에서 이미 실행 중인 작업이 있다"))
             jid = secrets.token_hex(6)
             self.jobs[jid] = {"repo": str(repo), "lines": [], "done": False, "rc": None}
         env = {**os.environ, "HARNIST_HOME": str(Path(__file__).resolve().parent)}
@@ -1800,7 +1841,7 @@ class Jobs:
         with self.lock:
             for j in self.jobs.values():
                 if j["repo"] == key and not j["done"]:
-                    raise HarnistError("같은 작업이 이미 실행 중이다")
+                    raise HarnistError(tr("같은 작업이 이미 실행 중이다"))
             jid = secrets.token_hex(6)
             self.jobs[jid] = {"repo": key, "lines": [], "done": False, "rc": None}
 
@@ -1810,7 +1851,7 @@ class Jobs:
                 fn(lambda m: j["lines"].append(str(m)))
                 j["rc"] = 0
             except Exception as e:  # 작업 실패는 화면에 보인다
-                j["lines"].append(f"오류: {e}")
+                j["lines"].append(tr("오류: {error}", error=e))
                 j["rc"] = 1
             j["done"] = True
 
@@ -1845,7 +1886,8 @@ class Jobs:
                     hint = inp.get("file_path") or inp.get("command") or inp.get("pattern") or ""
                     out.append(f"· {b.get('name')} {str(hint)[:160]}")
         elif d.get("type") == "result":
-            out.append(("오류로 끝남: " if d.get("is_error") else "끝: ") + str(d.get("result", ""))[:2000])
+            res = str(d.get("result", ""))[:2000]
+            out.append(tr("오류로 끝남: {result}", result=res) if d.get("is_error") else tr("끝: {result}", result=res))
         return out
 
     def get(self, jid: str) -> dict | None:
@@ -1878,7 +1920,7 @@ def open_terminal(repo: Path) -> dict:
                     subprocess.Popen(argv)
                     break
             else:
-                return {"ok": False, "command": fallback, "reason": "지원하는 터미널을 찾지 못함"}
+                return {"ok": False, "command": fallback, "reason": tr("지원하는 터미널을 찾지 못함")}
         return {"ok": True, "command": fallback}
     except OSError as e:
         return {"ok": False, "command": fallback, "reason": str(e)}
@@ -1908,7 +1950,7 @@ def serve(root: Path, port: int, extra: list[Path], open_browser: bool, auto_bas
                 break
         p = Path(raw).expanduser().resolve()
         if not p.is_dir() or (root != p and root not in p.parents):
-            raise HarnistError(f"지도 루트 밖이거나 없는 폴더: {raw}")
+            raise HarnistError(tr("지도 루트 밖이거나 없는 폴더: {path}", path=raw))
         return p
 
     class Handler(BaseHTTPRequestHandler):
@@ -1973,7 +2015,7 @@ def serve(root: Path, port: int, extra: list[Path], open_browser: bool, auto_bas
                         "running": jobs.running("bench"), "claude": bool(shutil.which("claude"))})
                 if u.path.startswith("/api/job/"):
                     j = jobs.get(u.path.rsplit("/", 1)[-1])
-                    return self.reply(j or {"error": "없는 작업"}, code=200 if j else 404)
+                    return self.reply(j or {"error": tr("없는 작업")}, code=200 if j else 404)
                 if u.path == "/i18n.js":
                     return self.reply((Path(__file__).resolve().parent / "web" / "i18n.js").read_bytes(),
                                       "application/javascript; charset=utf-8")
@@ -1997,7 +2039,7 @@ def serve(root: Path, port: int, extra: list[Path], open_browser: bool, auto_bas
                 if self.path == "/api/recs/apply":
                     items = [x for x in body.get("items", []) if isinstance(x, dict) and isinstance(x.get("item"), str)]
                     if not items:
-                        raise HarnistError("적용할 추천안을 하나 이상 고른다")
+                        raise HarnistError(tr("적용할 추천안을 하나 이상 고른다"))
                     for x in items:
                         for r in x.get("attach") or []:
                             known_repo(r)
@@ -2005,14 +2047,14 @@ def serve(root: Path, port: int, extra: list[Path], open_browser: bool, auto_bas
                     def go(log):
                         apply_recs(items, log)
                         audit_cache.clear()
-                        log("재측정을 시작한다")
+                        log(tr("재측정을 시작한다"))
                         run_bench("after", root, log)
                     return self.reply({"job": jobs.start_fn("bench", go)})
                 repo = known_repo(body.get("repo", ""))
                 if self.path == "/api/apply":
                     mods = [m for m in body.get("modules", []) if isinstance(m, str)]
                     if not mods:
-                        raise HarnistError("연결할 모듈을 하나 이상 고른다")
+                        raise HarnistError(tr("연결할 모듈을 하나 이상 고른다"))
                     rc, log = apply_modules(repo, mods)
                     return self.reply({"rc": rc, "log": log})
                 if self.path == "/api/generate":
@@ -2021,10 +2063,10 @@ def serve(root: Path, port: int, extra: list[Path], open_browser: bool, auto_bas
                 if self.path == "/api/design":
                     claude = shutil.which("claude")
                     if not claude:
-                        raise HarnistError("claude CLI 를 PATH 에서 찾지 못함")
+                        raise HarnistError(tr("claude CLI 를 PATH 에서 찾지 못함"))
                     purpose = str(body.get("purpose", "")).strip()[:4000]
                     if not purpose:
-                        raise HarnistError("프로젝트 목적을 적는다")
+                        raise HarnistError(tr("프로젝트 목적을 적는다"))
                     prompt = DESIGN_PROMPT.format(skill=Path(__file__).resolve().parent / "plugin/skills/init/SKILL.md",
                                                   engine=engine_cmd(), purpose=purpose, repo=repo)
                     py = "python3" if shutil.which("python3") else "python"
@@ -2037,7 +2079,7 @@ def serve(root: Path, port: int, extra: list[Path], open_browser: bool, auto_bas
             except HarnistError as e:
                 return self.reply({"error": str(e)}, code=400)
             except ValueError:
-                return self.reply({"error": "잘못된 요청"}, code=400)
+                return self.reply({"error": tr("잘못된 요청")}, code=400)
             self.send_error(404)
 
         def log_message(self, *_):
@@ -2045,9 +2087,9 @@ def serve(root: Path, port: int, extra: list[Path], open_browser: bool, auto_bas
 
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{srv.server_address[1]}/"
-    print(f"harnist view — {url}  (루트 {tilde(root)}, 종료 Ctrl-C)", flush=True)
+    print(tr("harnist view — {url}  (루트 {root}, 종료 Ctrl-C)", url=url, root=tilde(root)), flush=True)
     if auto_baseline and not (bench_dir() / "baseline.json").exists() and shutil.which("claude"):
-        print("기준선 측정이 없어 처음 한 번 자동으로 잰다 (claude -p 두 번, 점검 탭에서 진행 상황 확인)", flush=True)
+        print(tr("기준선 측정이 없어 처음 한 번 자동으로 잰다 (claude -p 두 번, 점검 탭에서 진행 상황 확인)"), flush=True)
         jobs.start_fn("bench", lambda log: run_bench("baseline", root, log))
     if open_browser:
         import webbrowser
@@ -2077,111 +2119,115 @@ def remember_home() -> None:
 def main(argv=None) -> int:
     if argv is None:
         remember_home()
-    ap = argparse.ArgumentParser(prog="harnist", description="Tuist식 Claude Code 하네스 생성기")
+    ap = argparse.ArgumentParser(prog="harnist", description=tr("Tuist식 Claude Code 하네스 생성기"))
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("generate", "check", "graph", "lock"):
         sp = sub.add_parser(name)
         sp.add_argument("-m", "--manifest", default="harness.yaml")
-        sp.add_argument("--out", help="출력 루트 (기본: 매니페스트 디렉터리)")
+        sp.add_argument("--out", help=tr("출력 루트 (기본: 매니페스트 디렉터리)"))
         if name == "generate":
             sp.add_argument("--dry-run", action="store_true")
-            sp.add_argument("--frozen", action="store_true", help="harness.lock 과 다르면 중단")
-            sp.add_argument("--adopt", action="store_true", help="관리 밖 기존 파일을 덮어쓰고 편입")
-            sp.add_argument("--force", action="store_true", help="수동 수정된 생성물도 덮어쓰기")
+            sp.add_argument("--frozen", action="store_true", help=tr("harness.lock 과 다르면 중단"))
+            sp.add_argument("--adopt", action="store_true", help=tr("관리 밖 기존 파일을 덮어쓰고 편입"))
+            sp.add_argument("--force", action="store_true", help=tr("수동 수정된 생성물도 덮어쓰기"))
         if name == "graph":
             sp.add_argument("--format", choices=["mermaid", "json"], default="mermaid")
     ls = sub.add_parser("list")
     ls.add_argument("--registry", action="append")
-    ip = sub.add_parser("init", help="빈 harness.yaml 생성")
+    ip = sub.add_parser("init", help=tr("빈 harness.yaml 생성"))
     ip.add_argument("dir", nargs="?", default=".")
     ip.add_argument("--modules", nargs="*", default=[])
-    pp = sub.add_parser("promote", help="project 모듈을 공유 레지스트리로 승격")
+    pp = sub.add_parser("promote", help=tr("project 모듈을 공유 레지스트리로 승격"))
     pp.add_argument("-m", "--manifest", default="harness.yaml")
     pp.add_argument("name")
     pp.add_argument("--to", required=True)
-    au = sub.add_parser("audit", help="전역 점검 스냅샷 — --mark 로 현재 상태를 점검 완료로 기록")
+    au = sub.add_parser("audit", help=tr("전역 점검 스냅샷 — --mark 로 현재 상태를 점검 완료로 기록"))
     au.add_argument("--mark", action="store_true")
-    us = sub.add_parser("usage", help="전역 스킬·에이전트·플러그인의 레포별 실제 사용(세션 기록)")
+    us = sub.add_parser("usage", help=tr("전역 스킬·에이전트·플러그인의 레포별 실제 사용(세션 기록)"))
     us.add_argument("--days", type=int, default=90)
     us.add_argument("--json", action="store_true")
-    dm = sub.add_parser("demote", help="전역 항목을 레지스트리 모듈로 내리고 필요한 레포에만 연결")
-    dm.add_argument("item", help="skill:<이름> | agent:<이름> | plugin:<id> | module:<계층/이름>")
-    dm.add_argument("--to", help="보관할 모듈 이름 (base/… 또는 domain/…)")
-    dm.add_argument("--attach", nargs="*", default=[], help="연결할 레포 경로")
+    dm = sub.add_parser("demote", help=tr("전역 항목을 레지스트리 모듈로 내리고 필요한 레포에만 연결"))
+    dm.add_argument("item", help=tr("skill:<이름> | agent:<이름> | plugin:<id> | module:<계층/이름>"))
+    dm.add_argument("--to", help=tr("보관할 모듈 이름 (base/… 또는 domain/…)"))
+    dm.add_argument("--attach", nargs="*", default=[], help=tr("연결할 레포 경로"))
     dm.add_argument("--dry-run", action="store_true")
-    rc_ = sub.add_parser("recall", help="보관된 스킬을 레포에 연결하거나 전역으로 되돌림")
-    rc_.add_argument("item", help="skill:<이름>")
+    rc_ = sub.add_parser("recall", help=tr("보관된 스킬을 레포에 연결하거나 전역으로 되돌림"))
+    rc_.add_argument("item", help=tr("skill:<이름>"))
     rc_.add_argument("--global", dest="to_global", action="store_true")
     rc_.add_argument("--attach", nargs="*", default=[])
     rc_.add_argument("--dry-run", action="store_true")
     for nm in ("attach", "detach"):
-        x = sub.add_parser(nm, help=f"레포 harness.yaml 에 모듈 {'연결' if nm == 'attach' else '해제'}")
+        x = sub.add_parser(nm, help=tr("레포 harness.yaml 에 모듈 연결") if nm == "attach" else tr("레포 harness.yaml 에 모듈 해제"))
         x.add_argument("module")
         x.add_argument("repo", nargs="?", default=".")
-    sc = sub.add_parser("scan", help="레포별 모듈 사용 현황(텍스트)")
+    sc = sub.add_parser("scan", help=tr("레포별 모듈 사용 현황(텍스트)"))
     sc.add_argument("--root", default=os.environ.get("HARNIST_ROOT", "~/Documents/github"))
-    vp = sub.add_parser("view", help="로컬 웹 지도")
+    vp = sub.add_parser("view", help=tr("로컬 웹 지도"))
     vp.add_argument("--root", default=os.environ.get("HARNIST_ROOT", "~/Documents/github"))
     vp.add_argument("--port", type=int, default=8765)
     vp.add_argument("--manifest", action="append", default=[])
     vp.add_argument("--open", action="store_true")
-    vp.add_argument("--no-baseline", action="store_true", help="첫 실행 자동 기준선 측정을 끈다")
-    dp = sub.add_parser("demo", help="가짜 데이터로 대시보드 띄우기 (읽기 전용, 실제 설정은 건드리지 않음)")
+    vp.add_argument("--no-baseline", action="store_true", help=tr("첫 실행 자동 기준선 측정을 끈다"))
+    dp = sub.add_parser("demo", help=tr("가짜 데이터로 대시보드 띄우기 (읽기 전용, 실제 설정은 건드리지 않음)"))
     dp.add_argument("--port", type=int, default=8766)
     dp.add_argument("--open", action="store_true")
-    dp.add_argument("--dir", help="데모 세계를 만들 폴더 (기본: 임시 폴더)")
-    bp = sub.add_parser("bench", help="세션 기동 시간·기본 컨텍스트 토큰·비용 측정 (claude -p 두 번)")
+    dp.add_argument("--dir", help=tr("데모 세계를 만들 폴더 (기본: 임시 폴더)"))
+    bp = sub.add_parser("bench", help=tr("세션 기동 시간·기본 컨텍스트 토큰·비용 측정 (claude -p 두 번)"))
     bp.add_argument("--label", default="check")
     bp.add_argument("--root", default=os.environ.get("HARNIST_ROOT", "~/Documents/github"))
     a = ap.parse_args(argv)
 
     try:
         if a.cmd == "init":
-            print(f"생성: {init_manifest(Path(a.dir), a.modules)}")
+            print(tr("생성: {path}", path=init_manifest(Path(a.dir), a.modules)))
             return 0
         if a.cmd == "promote":
-            print(f"승격: {a.name} → {tilde(promote(Path(a.manifest), a.name, a.to))}")
-            print("이제 generate 로 CLAUDE.md 블록과 락을 갱신한다.")
+            print(tr("승격: {name} → {path}", name=a.name, path=tilde(promote(Path(a.manifest), a.name, a.to))))
+            print(tr("이제 generate 로 CLAUDE.md 블록과 락을 갱신한다."))
             return 0
         if a.cmd == "audit":
             if a.mark:
-                print(f"점검 완료로 기록: {tilde(mark_audit())}")
+                print(tr("점검 완료로 기록: {path}", path=tilde(mark_audit())))
                 return 0
             new = new_since_audit()
-            print("점검 기록 없음 — 첫 점검이 필요하다" if new is None else
-                  ("마지막 점검 이후 새 전역 항목: " + ", ".join(new)) if new else "마지막 점검 이후 새 전역 항목 없음")
+            print(tr("점검 기록 없음 — 첫 점검이 필요하다") if new is None else
+                  tr("마지막 점검 이후 새 전역 항목: {items}", items=", ".join(new)) if new else
+                  tr("마지막 점검 이후 새 전역 항목 없음"))
             return 0
         if a.cmd == "usage":
             rows = usage_report(a.days)
             if a.json:
                 print(json.dumps(rows, ensure_ascii=False, indent=2))
                 return 0
-            print(f"최근 {a.days}일 세션 기록 기준. 상시 = 모든 세션에 항상 올라가는 설명 글자 수")
+            print(tr("최근 {days}일 세션 기록 기준. 상시 = 모든 세션에 항상 올라가는 설명 글자 수", days=a.days))
             for v in ("미사용", "제한", "호출 기록 없음", "공통", "보관됨", "상시 실행"):
                 group = [r for r in rows if r["verdict"] == v]
                 if not group:
                     continue
-                print(f"== {v} ({len(group)})")
+                print(f"== {verdict_label(v)} ({len(group)})")
                 for r in sorted(group, key=lambda r: (-r["always_chars"], r["name"])):
                     where = ", ".join(f"{Path(k).name}×{c}" for k, c in list(r["repos"].items())[:3])
                     mod = f" [{r['module']}]" if r["module"] else ""
-                    print(f"  {r['kind']:6} {r['name']:34} 세션 {r['sessions']:3}  상시 {r['always_chars']:4}자  {r['last'] or '-':10}  {where}{mod}")
+                    print(tr("  {kind:6} {name:34} 세션 {sessions:3}  상시 {chars:4}자  {last:10}  {where}{mod}",
+                             kind=r["kind"], name=r["name"], sessions=r["sessions"], chars=r["always_chars"],
+                             last=r["last"] or "-", where=where, mod=mod))
             return 0
         if a.cmd == "demote":
             for line in demote(a.item, a.to, [Path(p) for p in a.attach], a.dry_run):
                 print(line)
             if a.dry_run:
-                print("(dry-run) 아무것도 바꾸지 않았다")
+                print(tr("(dry-run) 아무것도 바꾸지 않았다"))
             return 0
         if a.cmd == "recall":
             if not a.to_global and not a.attach:
-                raise HarnistError("--global 또는 --attach <레포> 중 하나는 정한다")
+                raise HarnistError(tr("--global 또는 --attach <레포> 중 하나는 정한다"))
             for line in recall(a.item, a.to_global, [Path(p) for p in a.attach], a.dry_run):
                 print(line)
             return 0
         if a.cmd in ("attach", "detach"):
             mp = (attach if a.cmd == "attach" else detach)(Path(a.repo), a.module)
-            print(f"{'연결' if a.cmd == 'attach' else '해제'}: {a.module} — {tilde(mp)}. 이제 그 레포에서 generate 한다.")
+            print(tr("연결: {module} — {path}. 이제 그 레포에서 generate 한다.", module=a.module, path=tilde(mp)) if a.cmd == "attach"
+                  else tr("해제: {module} — {path}. 이제 그 레포에서 generate 한다.", module=a.module, path=tilde(mp)))
             return 0
         if a.cmd == "demo":
             sys.path.insert(0, str(HERE))
@@ -2193,23 +2239,26 @@ def main(argv=None) -> int:
             base = read_json(bench_dir() / "baseline.json")
             sv = savings(base, out)
             for k, v in sv["per_session"].items():
-                print(f"{k}: 세션당 {v['tokens']:+,} 토큰 · ${v['usd']:+.4f}(토큰 기준) · 로컬 기동 {v['local_s']:+}초 (기준선 대비 절감)")
+                print(tr("{profile}: 세션당 {tokens:+,} 토큰 · ${usd:+.4f}(토큰 기준) · 로컬 기동 {local:+}초 (기준선 대비 절감)",
+                         profile=k, tokens=v["tokens"], usd=v["usd"], local=v["local_s"]))
                 for w in sv["why"].get(k, []):
-                    cs = "; ".join(f"{c['kind']} {c['x']} {c['s']}초" for c in w["causes"])
-                    print(f"  느려짐 {w['seg']} +{w['d']}초" + (f" — {cs}" if cs else "") + (f" (출력 {w['a']}→{w['b']} 토큰)" if w["seg"] == "tail" else ""))
+                    cs = "; ".join(tr("{kind} {x} {s}초", kind=c["kind"], x=c["x"], s=c["s"]) for c in w["causes"])
+                    print(tr("  느려짐 {seg} +{d}초", seg=w["seg"], d=w["d"]) + (f" — {cs}" if cs else "")
+                          + (tr(" (출력 {a}→{b} 토큰)", a=w["a"], b=w["b"]) if w["seg"] == "tail" else ""))
             for d, w in sv["windows"].items():
-                print(f"최근 {d}일 추정 절감: {w['tokens']:,} 토큰 · ${w['usd']:.2f} (세션 {w['sessions']}, 서브에이전트 {w['agent_spawns']})")
+                print(tr("최근 {days}일 추정 절감: {tokens:,} 토큰 · ${usd:.2f} (세션 {sessions}, 서브에이전트 {spawns})",
+                         days=d, tokens=w["tokens"], usd=w["usd"], sessions=w["sessions"], spawns=w["agent_spawns"]))
             return 0
         if a.cmd == "scan":
             extra = sorted((Path(__file__).resolve().parent / "manifests").glob("*/harness.yaml"))
             st = collect_state(Path(a.root).expanduser().resolve(), extra)
-            print("== 프로젝트")
+            print(tr("== 프로젝트"))
             for p in st["projects"]:
                 print(f"{p['name']:20} {p['status']:8} {p['path']}")
-                print(f"{'':20} 직접: {', '.join(p['roots']) or '-'}")
+                print(tr("{pad:20} 직접: {roots}", pad="", roots=", ".join(p["roots"]) or "-"))
                 for i in p["issues"][:5]:
                     print(f"{'':20} ! {i}")
-            print("== 모듈 (계층 · 사용 레포 수 · 설명)")
+            print(tr("== 모듈 (계층 · 사용 레포 수 · 설명)"))
             for m in st["modules"]:
                 print(f"{m['key']:36} {m['layer']:8} {len(m['used_by'])}  {m['description']}")
             return 0
@@ -2229,7 +2278,7 @@ def main(argv=None) -> int:
             return 0
         if a.cmd == "lock":
             write_lock(plan)
-            print(f"harness.lock 갱신 ({len(plan.lock['modules'])} 항목)")
+            print(tr("harness.lock 갱신 ({n} 항목)", n=len(plan.lock["modules"])))
             return 0
         ledger = read_ledger(plan)
         if a.cmd == "check":
@@ -2237,41 +2286,278 @@ def main(argv=None) -> int:
             ld = lock_diff(plan)
             pending = [x for x in actions if x[0] != "adopt"]
             for k, r in pending:
-                print(f"드리프트 {k:6} {r}")
+                print(tr("드리프트 {kind:6} {path}", kind=k, path=r))
             for c in conflicts:
-                print(f"충돌 {c}")
+                print(tr("충돌 {msg}", msg=c))
             for d in ld:
-                print(f"락 {d}")
+                print(tr("락 {diff}", diff=d))
             if pending or conflicts or ld:
                 return 1
-            print(f"정합 — 생성물 {len(plan.files)}개 + 블록 {', '.join(plan.blocks)}, 락 일치")
+            print(tr("정합 — 생성물 {n}개 + 블록 {blocks}, 락 일치", n=len(plan.files), blocks=", ".join(plan.blocks)))
             return 0
         # generate
         ld = lock_diff(plan)
         if a.frozen and ld:
-            print("harness.lock 과 다름 (--frozen):", *ld, sep="\n  ", file=sys.stderr)
+            print(tr("harness.lock 과 다름 (--frozen):"), *ld, sep="\n  ", file=sys.stderr)
             return 1
         actions, conflicts = compute_actions(plan, ledger, a.adopt, a.force)
         if conflicts:
-            print("중단 — 아무것도 쓰지 않았다:", *conflicts, sep="\n  ", file=sys.stderr)
+            print(tr("중단 — 아무것도 쓰지 않았다:"), *conflicts, sep="\n  ", file=sys.stderr)
             return 1
         for k, r in actions:
             if k != "adopt":
                 print(f"{k:6} {r}")
         if a.dry_run:
-            print(f"(dry-run) 변경 {len([x for x in actions if x[0] != 'adopt'])}건, 락 {'변경 ' + str(len(ld)) + '건' if ld else '일치'}")
+            print(tr("(dry-run) 변경 {n}건, 락 {lock}", n=len([x for x in actions if x[0] != "adopt"]),
+                     lock=tr("변경 {n}건", n=len(ld)) if ld else tr("일치")))
             return 0
         apply(plan, actions, ledger)
         if ld:
             write_lock(plan)
             for d in ld:
-                print(f"락 {d}")
+                print(tr("락 {diff}", diff=d))
         n = len([x for x in actions if x[0] != "adopt"])
-        print(f"완료 — 변경 {n}건" if n else "변경 없음")
+        print(tr("완료 — 변경 {n}건", n=n) if n else tr("변경 없음"))
         return 0
     except HarnistError as e:
-        print(f"오류: {e}", file=sys.stderr)
+        print(tr("오류: {error}", error=e), file=sys.stderr)
         return 2
+
+
+# ---------------------------------------------------------------- i18n: English strings
+# 키 = tr() 에 넘기는 한국어 템플릿 그대로, 값 = 영어 템플릿. 자리표시자 이름은 같게 둔다.
+# 테스트가 harnist.py 의 모든 tr() 템플릿이 여기 있는지 확인한다.
+
+EN = {
+    # 파일·레지스트리·의존 해석
+    "파일 없음: {path}": "File not found: {path}",
+    "레지스트리 디렉터리 없음: {path}": "Registry directory not found: {path}",
+    "{file}: name '{name}' 이 경로 '{path}' 과 다름": "{file}: name '{name}' does not match its path '{path}'",
+    "{name}: 알 수 없는 layer '{layer}'": "{name}: unknown layer '{layer}'",
+    "{name}: project 계층 모듈은 레포의 .harnist/modules 에만, 그 밖의 계층은 공유 레지스트리에만 둔다":
+        "{name}: project layer modules belong only in the repo's .harnist/modules, other layers only in a shared registry",
+    "모듈 중복: {name} ({a} / {b})": "Duplicate module: {name} ({a} / {b})",
+    "모듈 없음: {name} (경로: {path})": "Module not found: {name} (path: {path})",
+    "순환 의존: {path}": "Circular dependency: {path}",
+    "계층 역전: {name}({layer}) 이 {dep}({dep_layer}) 에 의존 — 하위 계층은 상위 계층을 알 수 없다":
+        "Layer inversion: {name} ({layer}) depends on {dep} ({dep_layer}) — a lower layer may not depend on a higher one",
+    "settings 충돌 {key}: {a} 와 {b} 의 값이 다름": "settings conflict at {key}: {a} and {b} set different values",
+    "{where}: frontmatter 가 없어 model 을 지정할 수 없음": "{where}: no frontmatter, cannot set model",
+    # 플랜
+    "알 수 없는 scope: {scope}": "Unknown scope: {scope}",
+    "user 스코프는 매니페스트 target 이나 --out 으로 출력 위치를 명시해야 한다":
+        "user scope needs an output location: set target in the manifest or pass --out",
+    "출력 충돌: {path} 을 {a} 와 {b} 가 동시에 제공": "Output conflict: {path} is provided by both {a} and {b}",
+    "{module}: 스킬 없음 {path}/SKILL.md": "{module}: skill not found {path}/SKILL.md",
+    "{module}: 에이전트 없음 {path}": "{module}: agent not found {path}",
+    "MCP 충돌: {name} 을 여러 모듈이 다르게 정의": "MCP conflict: modules define {name} differently",
+    "spawn.routing: 에이전트 '{agent}' 를 제공하는 모듈이 없음": "spawn.routing: no module provides agent '{agent}'",
+    "teams.{team}: 멤버 '{member}' 가 제공된 에이전트·스킬에 없음":
+        "teams.{team}: member '{member}' is not a provided agent or skill",
+    "user 스코프는 skills·agents·CLAUDE.md 블록만 관리한다 — 플러그인·settings·MCP 를 쓰는 모듈은 project 매니페스트에서 사용":
+        "user scope manages only skills, agents and the CLAUDE.md block — use modules with plugins, settings or MCP in a project manifest",
+    "mirror 는 레포 루트의 .md 파일 이름이어야 함: {file}": "mirror must be a .md file name at the repo root: {file}",
+    "user 스코프는 mirror 를 지원하지 않는다 (각 에이전트의 전역 위치가 다름)":
+        "user scope does not support mirror (each agent keeps its global files in a different place)",
+    "links 는 refuse | skip | follow 중 하나: {value}": "links must be refuse, skip or follow: {value}",
+    # CLAUDE.md 블록 (ko 는 원문 그대로 써야 기존 레포가 드리프트하지 않는다)
+    "<!-- 생성물: harness.yaml 을 고치고 `harnist generate` 로 재생성한다. 직접 고치면 check 가 드리프트로 잡는다. -->":
+        "<!-- Generated: edit harness.yaml and run `harnist generate`. Hand edits show up as drift in check. -->",
+    "## 하네스 모듈": "## Harness modules",
+    "| 모듈 | 계층 | 제공 |": "| Module | Layer | Provides |",
+    "규칙만": "rules only",
+    "### 팀": "### Teams",
+    " · 리드 `{lead}`": " · lead `{lead}`",
+    "**{team}** — {purpose}  \n구성: {members}{lead}": "**{team}** — {purpose}  \nMembers: {members}{lead}",
+    "### 스폰 규칙": "### Spawn rules",
+    "한 번에 동시에 띄우는 서브에이전트는 {n}개를 넘기지 않는다.": "Run at most {n} subagents at the same time.",
+    "모델 라우팅(에이전트 frontmatter 에 반영됨): {routes}": "Model routing (written to agent frontmatter): {routes}",
+    "### 이 레포 고유": "### Specific to this repo",
+    # 적용·드리프트
+    "이 출력 폴더는 다른 매니페스트가 관리한다: {path} (--force 로 넘겨받기)":
+        "This output folder is managed by another manifest: {path} (--force to take over)",
+    "심볼릭 링크 너머 경로: {path} — 다른 도구가 관리하는 곳 (매니페스트 links: skip 으로 건너뛰기)":
+        "Path goes through a symlink: {path} — another tool manages it (set links: skip in the manifest to skip it)",
+    "수동 수정됨: {path} (--force 로 덮어쓰기)": "Edited by hand: {path} (--force to overwrite)",
+    "관리 밖 파일: {path} (--adopt 로 편입)": "Unmanaged file: {path} (--adopt to take ownership)",
+    "수동 수정된 파일이 더 이상 생성되지 않음: {path} (--force 로 삭제)":
+        "Hand-edited file is no longer generated: {path} (--force to delete)",
+    "수동 수정됨: {file} 의 harnist 블록 (--force 로 덮어쓰기)": "Edited by hand: harnist block in {file} (--force to overwrite)",
+    "관리 밖 harnist 블록: {file} (--adopt 로 편입)": "Unmanaged harnist block: {file} (--adopt to take ownership)",
+    "수동 수정된 harnist 블록이 더 이상 생성되지 않음: {file} (--force 로 제거)":
+        "Hand-edited harnist block is no longer generated: {file} (--force to remove)",
+    "harness.lock 없음": "no harness.lock",
+    "~ 마켓플레이스 {name}: {a} → {b}": "~ marketplace {name}: {a} → {b}",
+    "~ {name} (내용 변경)": "~ {name} (content changed)",
+    # init / promote / attach
+    "이미 있음: {path}": "Already exists: {path}",
+    "레지스트리에 없는 모듈: {names}": "Not in the registry: {names}",
+    "# harnist 매니페스트 — 이 레포가 쓰는 하네스 모듈 선언. .claude/ 는 `harnist generate` 의 생성물이다.":
+        "# harnist manifest — the harness modules this repo uses. .claude/ is generated by `harnist generate`.",
+    "{name}: 이 레포의 project 모듈이 아님": "{name}: not a project module of this repo",
+    "승격 대상은 base/… 또는 domain/… 이어야 함: {to}": "Promotion target must be base/… or domain/…: {to}",
+    "이미 있는 모듈 이름: {name}": "Module name already exists: {name}",
+    "project 모듈에 의존하고 있어 먼저 승격해야 함: {names}": "Depends on project modules, promote them first: {names}",
+    "modules: 블록을 찾지 못해 자동 편집할 수 없음 — 직접 추가":
+        "No modules: block found, cannot edit automatically — add it by hand",
+    "{path}: 자동 편집 결과가 YAML 이 아님 — 파일은 그대로 두었다 ({error})":
+        "{path}: the automatic edit is not valid YAML — file left unchanged ({error})",
+    "{path}: 자동 편집 결과가 예상과 다름 — 파일은 그대로 두었다":
+        "{path}: the automatic edit gave an unexpected result — file left unchanged",
+    "{path}: {module} 이 직접 선언되어 있지 않음": "{path}: {module} is not declared directly",
+    # 보관 + 스텁
+    "{path} 에 스텁이 아닌 스킬이 있어 덮어쓰지 않는다": "{path} holds a skill that is not a stub, not overwriting it",
+    "(보관됨) {desc}": "(archived) {desc}",
+    "# {name} — harnist 레지스트리에 보관된 스킬": "# {name} — skill archived in the harnist registry",
+    "{date} 전역 점검에서 사용 기록이 적어 전역에서 내리고 `{module}` 모듈로 보관했다. 사용자가 직접 불렀으니 그대로 수행한다.":
+        "On {date} the global audit found little use, so this skill was removed from global and archived in the `{module}` module. The user called it directly, so carry it out as usual.",
+    "1. `{dir}/SKILL.md` 를 읽고 그 절차를 따른다. 이 스킬의 기준 디렉터리는 `{dir}/` 이다. 본문에 `~/.claude/skills/{name}/` 경로가 나오면 이 위치로 바꿔 읽는다.":
+        "1. Read `{dir}/SKILL.md` and follow its procedure. This skill's base directory is `{dir}/`. Where the text mentions `~/.claude/skills/{name}/`, read it as this location.",
+    "2. 사용자가 함께 준 인자는 이 메시지의 ARGUMENTS 에 있다.": "2. Any arguments the user gave are in this message's ARGUMENTS.",
+    "3. 작업이 끝나면 한 번만 묻는다. 이 레포에서 계속 쓰기(`harnist recall skill:{name} --attach .`), 전역으로 되돌리기(`harnist recall skill:{name} --global`), 지금처럼 두기 중 무엇을 원하는지. `harnist` 는 `python3 \"$(cat ~/.claude/.harnist/home)/harnist.py\"` 이다.":
+        "3. When done, ask once whether to keep using it in this repo (`harnist recall skill:{name} --attach .`), restore it globally (`harnist recall skill:{name} --global`), or leave it as is. `harnist` means `python3 \"$(cat ~/.claude/.harnist/home)/harnist.py\"`.",
+    "skill:{name} 은 harnist 스텁이 아님 (보관된 적 없거나 이미 복귀됨)":
+        "skill:{name} is not a harnist stub (never archived, or already restored)",
+    # recall / demote
+    "recall 은 스텁이 남는 skill 만 받는다 — 에이전트·플러그인·MCP 는 harnist attach <모듈> <레포> 로 연결한다":
+        "recall takes only skills, which leave a stub — connect agents, plugins and MCP with harnist attach <module> <repo>",
+    "보관 모듈 {module} 이 레지스트리에 없음": "Archive module {module} is not in the registry",
+    "연결: {repo} ← {module}": "Connect: {repo} ← {module}",
+    "  ! 생성 중단 — 이 레포에서 /harnist:sync 로 마무리": "  ! generate stopped — finish with /harnist:sync in that repo",
+    "전역 복귀: 스텁 제거 후 글로벌 매니페스트에 {module} 추가·재생성":
+        "Restore globally: remove the stub, add {module} to the global manifest and regenerate",
+    "글로벌 재생성 충돌: {conflicts}": "Global regenerate conflict: {conflicts}",
+    "전역 복귀: {src} → ~/.claude/skills/{name} (스텁 교체, 보관본은 레지스트리에 남김)":
+        "Restore globally: {src} → ~/.claude/skills/{name} (replaces the stub, the archived copy stays in the registry)",
+    "내릴 수 없는 종류: {kind} (skill·agent·plugin·mcp·module) — 훅은 settings.json 에서 직접 옮긴다":
+        "Cannot demote this kind: {kind} (skill, agent, plugin, mcp, module) — move hooks in settings.json by hand",
+    "글로벌 매니페스트에 {name} 이 없음": "{name} is not in the global manifest",
+    "--to base/… 또는 domain/… 으로 보관할 모듈 이름을 정한다": "Name the archive module with --to base/… or domain/…",
+    "전역에 없는 항목: {item}": "Not a global item: {item}",
+    "{item} 은 이미 {module} 로 보관된 스텁": "{item} is already a stub archived in {module}",
+    "{item} 은 harnist 글로벌 모듈 {module} 의 일부 — module:{module} 로 내린다":
+        "{item} is part of the harnist global module {module} — demote module:{module} instead",
+    "{module} 은 외부 원본을 가리키는 모듈이라 내용을 더할 수 없음":
+        "{module} points at an external source, cannot add to it",
+    "MCP {name} 설정에 env/headers 가 있어 레지스트리(git)에 그대로 옮기지 않는다 — 값을 ${{환경변수}} 로 바꾼 설정으로 모듈을 직접 만들고 claude mcp remove 로 전역에서 뗀다":
+        "MCP {name} config has env/headers, so it is not copied to the registry (git) as is — create the module by hand with values replaced by ${{ENV_VAR}}, then remove it from global with claude mcp remove",
+    "비밀값으로 보이는 문자열이 있어 git 레지스트리로 복사하지 않는다 — 환경변수로 바꾼 뒤 다시 실행: {hits}":
+        "Found strings that look like secrets, not copying to the git registry — replace them with environment variables and run again: {hits}",
+    "{module} 에 이미 {name} 이 있음": "{module} already has {name}",
+    "보관: {kind} {name} → 레지스트리 {module}": "Archive: {kind} {name} → registry {module}",
+    "  ! 생성 중단 — 이 레포에서 /harnist:sync 로 마무리: {output}":
+        "  ! generate stopped — finish with /harnist:sync in that repo: {output}",
+    "전역 해제: 글로벌 매니페스트에서 {name} 제거 후 재생성": "Remove from global: drop {name} from the global manifest and regenerate",
+    "스텁: ~/.claude/skills/{name} (/{name} 로 부르면 보관본을 읽어 수행, 상시 비용 0)":
+        "Stub: ~/.claude/skills/{name} (/{name} runs the archived copy, zero always-on cost)",
+    "전역 해제: claude mcp remove {name} -s user": "Remove from global: claude mcp remove {name} -s user",
+    "  ! 해제 실패 — 직접 실행: claude mcp remove {name} -s user ({error})":
+        "  ! remove failed — run it yourself: claude mcp remove {name} -s user ({error})",
+    "전역 해제: claude plugin disable {name} --scope user": "Remove from global: claude plugin disable {name} --scope user",
+    "  ! 비활성화 실패 — 직접 실행: claude plugin disable {name} --scope user ({error})":
+        "  ! disable failed — run it yourself: claude plugin disable {name} --scope user ({error})",
+    "전역 해제: {src} → {dst} (백업 후 제거)": "Remove from global: {src} → {dst} (backed up, then removed)",
+    # 측정
+    "claude CLI 를 PATH 에서 찾지 못함": "claude CLI not found on PATH",
+    "{label} 프로브 실패: {output}": "{label} probe failed: {output}",
+    "기본": "default",
+    "정적 점검: 세션 기록에서 전역 항목 사용을 집계한다": "Static audit: counting global item usage in session history",
+    "{name} 세션 프로브: claude -p ({model}) 실행 중": "{name} session probe: running claude -p ({model})",
+    "기본 모델": "default model",
+    "  기본 컨텍스트 {tokens:,} 토큰 · ${cost:.4f} · 총 {wall}초": "  base context {tokens:,} tokens · ${cost:.4f} · {wall}s total",
+    "  실패: {error}": "  failed: {error}",
+    "첫 측정이라 기준선으로 저장했다": "First measurement, saved as the baseline",
+    "저장: {path}": "Saved: {path}",
+    "건너뜀 {item}: {error}": "Skipped {item}: {error}",
+    "점검 완료 기록을 갱신했다": "Updated the audit record",
+    # 대시보드
+    "연결: {module}": "Connected: {module}",
+    "오류: {error}": "Error: {error}",
+    "이 레포에서 이미 실행 중인 작업이 있다": "A job is already running for this repo",
+    "같은 작업이 이미 실행 중이다": "The same job is already running",
+    "오류로 끝남: {result}": "Ended with an error: {result}",
+    "끝: {result}": "Done: {result}",
+    "지원하는 터미널을 찾지 못함": "No supported terminal found",
+    "지도 루트 밖이거나 없는 폴더: {path}": "Folder is outside the map root or does not exist: {path}",
+    "없는 작업": "No such job",
+    "적용할 추천안을 하나 이상 고른다": "Select at least one recommendation to apply",
+    "재측정을 시작한다": "Starting re-measurement",
+    "연결할 모듈을 하나 이상 고른다": "Select at least one module to connect",
+    "프로젝트 목적을 적는다": "Describe the project's purpose",
+    "잘못된 요청": "Bad request",
+    "harnist view — {url}  (루트 {root}, 종료 Ctrl-C)": "harnist view — {url}  (root {root}, Ctrl-C to quit)",
+    "기준선 측정이 없어 처음 한 번 자동으로 잰다 (claude -p 두 번, 점검 탭에서 진행 상황 확인)":
+        "No baseline yet, measuring once now (claude -p twice, progress in the Audit tab)",
+    # CLI 도움말
+    "Tuist식 Claude Code 하네스 생성기": "Tuist-style Claude Code harness generator",
+    "출력 루트 (기본: 매니페스트 디렉터리)": "output root (default: the manifest's directory)",
+    "harness.lock 과 다르면 중단": "stop if harness.lock differs",
+    "관리 밖 기존 파일을 덮어쓰고 편입": "overwrite existing unmanaged files and take ownership",
+    "수동 수정된 생성물도 덮어쓰기": "overwrite generated files even if edited by hand",
+    "빈 harness.yaml 생성": "create an empty harness.yaml",
+    "project 모듈을 공유 레지스트리로 승격": "promote a project module to the shared registry",
+    "전역 점검 스냅샷 — --mark 로 현재 상태를 점검 완료로 기록":
+        "global audit snapshot — --mark records the current state as audited",
+    "전역 스킬·에이전트·플러그인의 레포별 실제 사용(세션 기록)":
+        "per-repo usage of global skills, agents and plugins (from session history)",
+    "전역 항목을 레지스트리 모듈로 내리고 필요한 레포에만 연결":
+        "archive a global item as a registry module and connect it only to repos that need it",
+    "skill:<이름> | agent:<이름> | plugin:<id> | module:<계층/이름>": "skill:<name> | agent:<name> | plugin:<id> | module:<layer/name>",
+    "보관할 모듈 이름 (base/… 또는 domain/…)": "archive module name (base/… or domain/…)",
+    "연결할 레포 경로": "repo paths to connect",
+    "보관된 스킬을 레포에 연결하거나 전역으로 되돌림": "connect an archived skill to repos or restore it globally",
+    "skill:<이름>": "skill:<name>",
+    "레포 harness.yaml 에 모듈 연결": "add a module to a repo's harness.yaml",
+    "레포 harness.yaml 에 모듈 해제": "remove a module from a repo's harness.yaml",
+    "레포별 모듈 사용 현황(텍스트)": "module usage per repo (text)",
+    "로컬 웹 지도": "local web dashboard",
+    "첫 실행 자동 기준선 측정을 끈다": "skip the automatic baseline measurement on first run",
+    "가짜 데이터로 대시보드 띄우기 (읽기 전용, 실제 설정은 건드리지 않음)":
+        "open the dashboard with fake data (read-only, your real setup is not touched)",
+    "데모 세계를 만들 폴더 (기본: 임시 폴더)": "folder for the demo world (default: a temp folder)",
+    "세션 기동 시간·기본 컨텍스트 토큰·비용 측정 (claude -p 두 번)":
+        "measure session startup time, base context tokens and cost (claude -p twice)",
+    # CLI 출력
+    "생성: {path}": "Created: {path}",
+    "승격: {name} → {path}": "Promoted: {name} → {path}",
+    "이제 generate 로 CLAUDE.md 블록과 락을 갱신한다.": "Now run generate to update the CLAUDE.md block and the lock.",
+    "점검 완료로 기록: {path}": "Recorded as audited: {path}",
+    "점검 기록 없음 — 첫 점검이 필요하다": "No audit record — run a first audit",
+    "마지막 점검 이후 새 전역 항목: {items}": "New global items since the last audit: {items}",
+    "마지막 점검 이후 새 전역 항목 없음": "No new global items since the last audit",
+    "최근 {days}일 세션 기록 기준. 상시 = 모든 세션에 항상 올라가는 설명 글자 수":
+        "Based on the last {days} days of session history. always-on = description characters loaded into every session",
+    "  {kind:6} {name:34} 세션 {sessions:3}  상시 {chars:4}자  {last:10}  {where}{mod}":
+        "  {kind:6} {name:34} sessions {sessions:3}  always-on {chars:4} chars  {last:10}  {where}{mod}",
+    "(dry-run) 아무것도 바꾸지 않았다": "(dry-run) nothing changed",
+    "--global 또는 --attach <레포> 중 하나는 정한다": "Pass --global or --attach <repo>",
+    "연결: {module} — {path}. 이제 그 레포에서 generate 한다.": "Attached: {module} — {path}. Now run generate in that repo.",
+    "해제: {module} — {path}. 이제 그 레포에서 generate 한다.": "Detached: {module} — {path}. Now run generate in that repo.",
+    "{profile}: 세션당 {tokens:+,} 토큰 · ${usd:+.4f}(토큰 기준) · 로컬 기동 {local:+}초 (기준선 대비 절감)":
+        "{profile}: per session {tokens:+,} tokens · ${usd:+.4f} (token-based) · local startup {local:+}s (saved vs. baseline)",
+    "{kind} {x} {s}초": "{kind} {x} {s}s",
+    "  느려짐 {seg} +{d}초": "  slower {seg} +{d}s",
+    " (출력 {a}→{b} 토큰)": " (output {a}→{b} tokens)",
+    "최근 {days}일 추정 절감: {tokens:,} 토큰 · ${usd:.2f} (세션 {sessions}, 서브에이전트 {spawns})":
+        "Estimated savings over the last {days} days: {tokens:,} tokens · ${usd:.2f} ({sessions} sessions, {spawns} subagents)",
+    "== 프로젝트": "== Projects",
+    "{pad:20} 직접: {roots}": "{pad:20} direct: {roots}",
+    "== 모듈 (계층 · 사용 레포 수 · 설명)": "== Modules (layer · repos using it · description)",
+    "harness.lock 갱신 ({n} 항목)": "harness.lock updated ({n} entries)",
+    "드리프트 {kind:6} {path}": "drift {kind:6} {path}",
+    "충돌 {msg}": "conflict {msg}",
+    "락 {diff}": "lock {diff}",
+    "정합 — 생성물 {n}개 + 블록 {blocks}, 락 일치": "In sync — {n} generated files + block {blocks}, lock matches",
+    "harness.lock 과 다름 (--frozen):": "Differs from harness.lock (--frozen):",
+    "중단 — 아무것도 쓰지 않았다:": "Stopped — nothing was written:",
+    "(dry-run) 변경 {n}건, 락 {lock}": "(dry-run) {n} changes, lock {lock}",
+    "변경 {n}건": "{n} changes",
+    "일치": "matches",
+    "완료 — 변경 {n}건": "Done — {n} changes",
+    "변경 없음": "No changes",
+    # demo.py
+    "데모 세계: {path}": "demo world: {path}",
+}
 
 
 if __name__ == "__main__":

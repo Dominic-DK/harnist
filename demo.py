@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import harnist as H
+from harnist import tr
 
 
 def w(path: Path, text: str) -> None:
@@ -193,7 +194,7 @@ def run(port: int = 8766, open_browser: bool = False, where: str | None = None) 
     w(paths["home"] / ".harnist/audit.json", json.dumps({"at": "2026-10-01 09:20", "items": [
         i for i in H.item_ids(H.global_items()) if i != "skill:image-gen"]}))  # image-gen = 점검 뒤 새로 붙은 전역 항목
     fake_bench(paths["home"], rows, paths["workspace"])
-    print(f"demo world: {root}")
+    print(tr("데모 세계: {path}", path=root))
     aliases = [(str(paths["workspace"]), "~/code"), (str(paths["registry"]), "~/.harnist/registry"), (str(paths["home"]), "~/.claude"),
                (H.tilde(paths["workspace"]), "~/code"), (H.tilde(paths["registry"]), "~/.harnist/registry"), (H.tilde(paths["home"]), "~/.claude")]
     H.serve(paths["workspace"], port, [], open_browser, auto_baseline=False, demo=True, aliases=aliases)

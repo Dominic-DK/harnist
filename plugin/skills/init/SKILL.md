@@ -1,66 +1,61 @@
 ---
 name: init
 disable-model-invocation: true
-description: 새 프로젝트 폴더(또는 하네스가 없는 레포)에 harnist 하네스를 세팅한다. 프로젝트를 읽고 대화해서 메인 시스템의 공통·도메인 모듈을 연결하고, 비어 있는 역할은 이 프로젝트 전용 에이전트·스킬을 새로 설계해 project 모듈로 만든 뒤 .claude/ 를 생성한다. "하네스 세팅해줘", "이 프로젝트 에이전트 구성해줘", "프로젝트 시작하자", "harnist init", "에이전트 팀 짜줘(이 레포)" 요청 시 사용. 이미 harness.yaml 이 있으면 모듈 추가·수정도 이 스킬로 한다.
+description: Set up a harnist harness in a new project folder (or a repo without one). Read the project, connect the shared registry modules it actually needs, design project-only agents and skills for the gaps as project modules, and generate .claude/. Also edits an existing harness.yaml.
 ---
 
-# harnist init — 프로젝트 하네스 세팅
+# harnist init — set up a project harness
 
-목표는 두 가지를 같이 하는 것이다. 이 프로젝트에 맞는 에이전트·스킬을 새로 설계하는 일, 그리고 그 결과를 혼자 떨어진 `.claude/`가 아니라 메인 시스템(공유 레지스트리)에 연결된 모듈로 남기는 일이다. 이미 있는 것은 연결하고, 없는 것만 만든다.
+Do two things together: design agents and skills that fit this project, and keep the result connected to the shared registry as modules instead of a standalone `.claude/`. Connect what already exists; create only what is missing.
 
-엔진은 플러그인이 아니라 harnist 레포에 있다. 모든 명령은 아래 형태로 부른다.
+The engine lives in the harnist repo, not in the plugin. Call it like this:
 
 ```bash
 H="${HARNIST_HOME:-$(cat ~/.claude/.harnist/home 2>/dev/null || echo ~/.claude/plugins/marketplaces/harnist)}"
-python3 "$H/harnist.py" <명령>
+python3 "$H/harnist.py" <command>
 ```
 
-## 1. 현황 파악
+## 1. Read the project
 
-폴더를 읽는다: README·문서, 코드 언어와 빌드 도구, `git log --oneline -20`, 기존 `.claude/`와 CLAUDE.md. `harness.yaml`이 이미 있으면 새로 만들지 말고 7단계(수정 모드)로 간다.
+Read the README and docs, the languages and build tools, `git log --oneline -20`, and any existing `.claude/` and CLAUDE.md. If `harness.yaml` already exists, go to step 7 (edit mode).
 
-기존 `.claude/`에 손으로 만든 에이전트·스킬이 있으면 버리지 않는다. 6단계에서 project 모듈로 옮기고 `--adopt`로 편입할지를 사용자에게 묻는다.
+Do not throw away hand-made agents or skills in an existing `.claude/`. In step 6, move them into project modules and ask the user before adopting with `--adopt`.
 
-## 2. 목적 확인
+## 2. Confirm the purpose
 
-폴더가 비었거나 의도가 코드에서 드러나지 않으면 사용자에게 묻는다. 한 번에 한 질문씩, 많아야 세 번이다.
+If the folder is empty or the intent is not clear from the code, ask the user one question at a time, at most three:
 
-1. 이 프로젝트가 만드는 것과 결과물의 형태
-2. 앞으로 반복될 작업(리서치, 구현, 리뷰, 배포, 문서화, 운영 등)
-3. 다른 레포와 같이 쓰는 것(팀 규칙, 지식 베이스, 데이터 홈)
+1. What the project builds and what the output looks like
+2. Which work will repeat (research, implementation, review, release, docs, operations)
+3. What it shares with other repos (team rules, knowledge base, data home)
 
-## 3. 메인 시스템 조회
+## 3. Look at the main system
 
 ```bash
-python3 "$H/harnist.py" list   # 공유 레지스트리 모듈
-python3 "$H/harnist.py" scan   # 다른 레포가 무엇을 쓰는지
+python3 "$H/harnist.py" list            # shared registry modules
+python3 "$H/harnist.py" scan            # what other repos use
+python3 "$H/harnist.py" usage --json    # which global items each repo actually called
 ```
 
-실사용 이력도 근거로 쓴다. `usage --json`에는 항목마다 어느 레포에서 몇 번 쓰였는지가 들어 있다. 이번 프로젝트와 목적이 비슷한 레포에서 실제로 쓰인 스킬·플러그인·MCP는 강한 후보이고, 설치만 돼 있고 쓰인 적 없는 것은 넣지 않는다.
+Use real usage as evidence. Skills, plugins and MCP servers that similar repos actually called are strong candidates. Items that are installed but never used are not. Modules archived from the global scope by an audit also show up in `list`; connect them if this project needs them.
 
-```bash
-python3 "$H/harnist.py" usage --json > /tmp/harnist-usage.json   # 필요한 항목만 골라 읽는다
-```
+- **base modules**: things every repo of this kind needs regardless of purpose.
+- **domain modules**: modules whose description matches the repeating work from step 2.
+- Give the user one line of evidence per chosen module. When in doubt, leave it out — adding later is cheap.
 
-전역에서 내려 레지스트리에 보관된 모듈(점검으로 내린 것)도 `list`에 나온다. 이 프로젝트에 필요하면 연결한다. 비슷한 성격의 다른 레포가 쓰는 조합이 좋은 출발점이다. 고르는 기준은 이렇다.
+## 4. Design for the gaps
 
-- **base 모듈**: 레포 성격과 무관하게 같이 가는 것. 팀 공용 규칙·플러그인이 있다면 그 base 모듈.
-- **domain 모듈**: 2단계의 반복 작업과 설명이 겹치는 것.
-- 고른 모듈마다 근거를 한 줄씩 사용자에게 보인다. 애매하면 넣지 않는다. 나중에 추가하는 비용은 낮다.
+Create something new only for repeating work no chosen module covers.
 
-## 4. 빈 역할 설계
-
-선택한 모듈이 덮지 못하는 반복 작업만 새로 만든다. 이 단계가 harness 스킬과 같은 결이다. 프로젝트의 일을 역할로 쪼개되, 아래 기준으로 형태를 정한다.
-
-| 형태 | 언제 | 예 |
+| Form | When | Example |
 | --- | --- | --- |
-| 에이전트 | 별도 컨텍스트가 필요하거나, 병렬로 돌거나, 다른 모델이 맞는 일 | 국가별 분석 워커, 독립 리뷰어 |
-| 스킬 | 순서·규율·도구 사용법이 있는 절차 | 배포 절차, 판정 방법론 |
-| claude_md | 항상 지켜야 하는 짧은 규칙 | 산출물 위치, 금지 사항 |
+| Agent | needs its own context, runs in parallel, or suits a different model | per-country analysis worker, independent reviewer |
+| Skill | a procedure with order, rules or tool usage | release procedure, scoring method |
+| claude_md | a short rule that always applies | output location, things not to do |
 
-처음에는 에이전트 3개, 스킬 3개 이하로 시작한다. 쓰면서 부족한 것을 더하는 쪽이 빗나간 것을 지우는 쪽보다 싸다. 같은 목적의 에이전트·스킬은 한 모듈로 묶는다. 보통 `project/<레포이름>` 하나면 충분하다.
+Start with at most three agents and three skills. Adding what turns out to be missing is cheaper than removing what missed. Group agents and skills with one purpose into one module; usually `project/<repo-name>` is enough.
 
-## 5. project 모듈 작성
+## 5. Write the project module
 
 ```
 .harnist/modules/project/<name>/
@@ -70,43 +65,42 @@ python3 "$H/harnist.py" usage --json > /tmp/harnist-usage.json   # 필요한 항
 ```
 
 ```yaml
-# module.yaml
 name: project/<name>
 layer: project
-description: 한 줄 — scan·view 에 그대로 보인다
-requires: [domain/...]          # 기대는 공유 모듈이 있으면
+description: one line — shown in scan and the dashboard
+requires: [domain/...]
 agents: [<agent>]
 skills: [<skill>]
 claude_md: |
-  트리거와 규칙. 무엇을 할 때 어느 에이전트·스킬을 쓰는지.
+  Triggers and rules: which agent or skill to use for what.
 ```
 
-에이전트 파일은 frontmatter에 `name`, `description`(언제 부르는지가 드러나게), `model`을 둔다. 스킬의 `description`에는 사용자가 실제로 할 법한 트리거 문장을 넣는다. 스킬 안에서 자기 파일을 가리킬 때는 레포 루트 기준 `.claude/skills/<skill>/...`로 쓴다. 나중에 승격하면 이 경로가 설치 위치에 맞게 자동으로 재작성된다.
+Agent files need `name`, `description` (make it clear when to call it) and `model` in the frontmatter. Skill descriptions should contain trigger phrases a user would actually type. Inside a skill, refer to its own files as `.claude/skills/<skill>/...` relative to the repo root; promotion rewrites these paths for the install location.
 
-## 6. 매니페스트와 생성
+## 6. Manifest and generate
 
 ```bash
 python3 "$H/harnist.py" init . --modules base/... domain/...
 ```
 
-만들어진 `harness.yaml`에 project 모듈을 추가하고, 필요하면 `spawn`(동시 상한·모델 라우팅·규칙), `teams`, `overrides.claude_md`(레포 고유 메모 파일)를 적는다. 형식은 `$H/README.md`의 매니페스트 절을 따른다.
+Add the project module to the generated `harness.yaml`, plus `spawn` (concurrency limit, model routing, rules), `teams` and `overrides.claude_md` (a repo-specific notes file) if needed. The format is in the manifest section of `$H/README.md`.
 
 ```bash
-python3 "$H/harnist.py" generate --dry-run   # 계획을 사용자에게 요약해서 보인다
+python3 "$H/harnist.py" generate --dry-run   # summarize the plan for the user
 python3 "$H/harnist.py" generate
 python3 "$H/harnist.py" check
 ```
 
-"관리 밖 파일" 충돌이 나면 덮어쓰지 말고 사용자에게 보인다. 그 내용이 project 모듈로 옮겨졌는지 확인한 뒤 `--adopt`로 실행한다.
+If generate stops on an unmanaged file, do not overwrite it. Show it to the user, make sure its content moved into a project module, then run with `--adopt`.
 
-## 7. 수정 모드 (harness.yaml 이 이미 있을 때)
+## 7. Edit mode (harness.yaml exists)
 
-모듈 추가·제거는 `harness.yaml`을 고치고, 에이전트·스킬 내용은 `.harnist/modules/project/...` 쪽을 고친다. 그다음 `generate`를 실행한다. 생성물인 `.claude/` 아래 파일을 직접 고치지 않는다.
+Add or remove modules in `harness.yaml`; change agent and skill content under `.harnist/modules/project/...`; then run `generate`. Never edit generated files under `.claude/` directly.
 
-## 8. 보고
+## 8. Report
 
-마지막에 세 가지를 짧게 알린다.
+Finish with three short points:
 
-1. 공통·도메인·전용으로 무엇이 들어갔는지
-2. 새 에이전트와 플러그인은 세션을 다시 시작해야 로드된다는 점. 플러그인이 새로 들어갔으면 시작할 때 설치 제안이 뜬다.
-3. 지도 확인은 `/harnist:view`, 전용 모듈이 다른 레포에서도 필요해지면 `/harnist:promote`
+1. What went in as base, domain and project-only
+2. New agents and plugins load after the session restarts; new plugins show an install prompt at startup
+3. `/harnist:view` shows the map; `/harnist:promote` shares a project module once another repo needs it

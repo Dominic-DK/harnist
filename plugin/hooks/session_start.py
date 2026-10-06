@@ -30,6 +30,19 @@ ENGINE = engine_home() / "harnist.py"
 ROOT = Path(os.environ.get("HARNIST_ROOT", "~/Documents/github")).expanduser().resolve()
 
 
+def ko() -> bool:
+    """엔진과 같은 규칙 — HARNIST_LANG, LC_ALL, LC_MESSAGES, LANG 중 처음 값이 ko 로 시작하면 한국어."""
+    for k in ("HARNIST_LANG", "LC_ALL", "LC_MESSAGES", "LANG"):
+        v = os.environ.get(k)
+        if v:
+            return v.lower().startswith("ko")
+    return False
+
+
+def say(en: str, kr: str) -> str:
+    return kr if ko() else en
+
+
 def read_json(p):
     try:
         return json.loads(p.read_text())
@@ -58,16 +71,20 @@ def daily_global_note():
     stamp.write_text(today)
     snap = read_json(STATE / "audit.json")
     if not snap:
-        return ("harnist 가 설치됐지만 전역 점검을 한 적이 없다. 사용자에게 /harnist:audit 으로 "
-                "전역 스킬·플러그인·MCP 를 실사용 이력과 대조해 정리할 수 있다고 한 번 알린다.",
-                "[harnist] 첫 전역 점검 전 — /harnist:audit")
+        return (say("harnist is installed but the global scope has never been audited. Tell the user once that /harnist:audit "
+                    "compares global skills, plugins and MCP servers with real usage and slims them down.",
+                    "harnist 가 설치됐지만 전역 점검을 한 적이 없다. 사용자에게 /harnist:audit 으로 "
+                    "전역 스킬·플러그인·MCP 를 실사용 이력과 대조해 정리할 수 있다고 한 번 알린다."),
+                say("[harnist] global scope not audited yet — /harnist:audit", "[harnist] 첫 전역 점검 전 — /harnist:audit"))
     new = sorted(global_ids() - set(snap.get("items", [])))
     if not new:
         return None
-    names = ", ".join(new[:6]) + (f" 외 {len(new) - 6}개" if len(new) > 6 else "")
-    return (f"마지막 전역 점검({snap.get('at')}) 이후 전역에 새로 붙은 항목: {names}. 모든 세션에 상시 로드된다. "
-            "사용자에게 알리고, 특정 레포에서만 쓸 것이면 /harnist:audit 으로 레지스트리에 보관하고 그 레포에만 연결하자고 제안한다.",
-            f"[harnist] 새 전역 항목 {len(new)}개 — /harnist:audit")
+    names = ", ".join(new[:6]) + (say(f" and {len(new) - 6} more", f" 외 {len(new) - 6}개") if len(new) > 6 else "")
+    return (say(f"New global items since the last audit ({snap.get('at')}): {names}. They load into every session. "
+                "Tell the user; if they are only needed in specific repos, suggest /harnist:audit to archive them in the registry and connect only those repos.",
+                f"마지막 전역 점검({snap.get('at')}) 이후 전역에 새로 붙은 항목: {names}. 모든 세션에 상시 로드된다. "
+                "사용자에게 알리고, 특정 레포에서만 쓸 것이면 /harnist:audit 으로 레지스트리에 보관하고 그 레포에만 연결하자고 제안한다."),
+            say(f"[harnist] {len(new)} new global items — /harnist:audit", f"[harnist] 새 전역 항목 {len(new)}개 — /harnist:audit"))
 
 
 def repo_note(cwd):
@@ -83,10 +100,11 @@ def repo_note(cwd):
         lines = (r.stdout + r.stderr).strip().splitlines()
         head = "; ".join(lines[:6]) + (f" 외 {len(lines) - 6}건" if len(lines) > 6 else "")
         if r.returncode == 2:  # 매니페스트를 해석하지 못함 — 드리프트가 아니다
-            return (f"이 레포 harness.yaml 을 해석하지 못했다: {head}. 사용자에게 알린다.",
-                    "[harnist] harness.yaml 오류 — /harnist:sync 로 확인")
-        return (f"이 레포 하네스가 매니페스트·원본과 어긋나 있다: {head}. 사용자에게 알리고, 원하면 /harnist:sync 로 재생성한다.",
-                f"[harnist] 하네스 드리프트 {len(lines)}건 — /harnist:sync")
+            return (say(f"This repo's harness.yaml could not be read: {head}. Tell the user.", f"이 레포 harness.yaml 을 해석하지 못했다: {head}. 사용자에게 알린다."),
+                    say("[harnist] harness.yaml error — check with /harnist:sync", "[harnist] harness.yaml 오류 — /harnist:sync 로 확인"))
+        return (say(f"This repo's harness has drifted from its manifest or sources: {head}. Tell the user; regenerate with /harnist:sync if they want.",
+                    f"이 레포 하네스가 매니페스트·원본과 어긋나 있다: {head}. 사용자에게 알리고, 원하면 /harnist:sync 로 재생성한다."),
+                say(f"[harnist] harness drift: {len(lines)} — /harnist:sync", f"[harnist] 하네스 드리프트 {len(lines)}건 — /harnist:sync"))
     if ROOT not in [cwd, *cwd.parents] or cwd == ROOT:
         return None
     if any((cwd / m).exists() for m in (".claude", ".git", "CLAUDE.md", "AGENTS.md")):
@@ -96,9 +114,11 @@ def repo_note(cwd):
     except OSError:
         return None
     if len(visible) <= 5:
-        return ("하네스가 없는 새 프로젝트 폴더다. 사용자가 작업 방향을 말하면 /harnist:init 으로 "
-                "실사용 이력 기반의 스킬·플러그인·MCP 연결과 전용 에이전트 설계를 제안할 수 있다.",
-                "[harnist] 새 폴더 — /harnist:init")
+        return (say("This is a new project folder without a harness. Once the user describes the work, /harnist:init can connect "
+                    "skills, plugins and MCP servers based on real usage and design project agents.",
+                    "하네스가 없는 새 프로젝트 폴더다. 사용자가 작업 방향을 말하면 /harnist:init 으로 "
+                    "실사용 이력 기반의 스킬·플러그인·MCP 연결과 전용 에이전트 설계를 제안할 수 있다."),
+                say("[harnist] new folder — /harnist:init", "[harnist] 새 폴더 — /harnist:init"))
     return None
 
 

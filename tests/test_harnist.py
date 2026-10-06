@@ -10,6 +10,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
+# 기존 테스트는 한국어 메시지를 확인한다 — 하위 프로세스 테스트도 os.environ 을 물려받는다
+os.environ["HARNIST_LANG"] = "ko"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import harnist  # noqa: E402
 
@@ -615,6 +617,71 @@ class ServerTest(GlobalFixture):
         self.assertEqual(code, 200, body)
         self.assertEqual(json.loads(body)["rc"], 0)
         self.assertTrue((self.target / ".claude/skills/alpha/SKILL.md").exists())
+
+
+class I18nTest(Fixture):
+    # i18n 도입 전 코드로 만든 render_block 출력 — ko 로케일에서 바이트 단위로 같아야 기존 레포가 드리프트하지 않는다
+    GOLDEN_BLOCK = (
+        '<!-- harnist:begin -->\n<!-- 생성물: harness.yaml 을 고치고 `harnist generate` 로 재생성한다. 직접 고치면 check 가 드리프트로 잡는다. -->\n## 하네스 모듈\n\n| 모듈 | 계층 | 제공 |\n| --- | --- | --- |\n| base/core | base | plugins 1, mcp 1 |\n| domain/alpha | domain | skills 2, agents 1 |\n| project/p | project | 규칙만 |\n\n### base/core\n\n공통 규칙\n\n### 팀\n\n**t1** — 목적  \n구성: w, s1 · 리드 `w`\n\n**t2** —   \n구성: s2\n\n### 스폰 규칙\n\n한 번에 동시에 띄우는 서브에이전트는 3개를 넘기지 않는다.\n모델 라우팅(에이전트 frontmatter 에 반영됨): w→haiku\n\n- 규칙 하나\n\n### 이 레포 고유\n\n로컬\n<!-- harnist:end -->'
+    )
+
+    def lang(self, value):
+        old = os.environ.get("HARNIST_LANG")
+        os.environ["HARNIST_LANG"] = value
+        self.addCleanup(lambda: os.environ.__setitem__("HARNIST_LANG", old) if old is not None else os.environ.pop("HARNIST_LANG", None))
+
+    def test_english_layer_inversion_message(self):
+        self.lang("en")
+        p = self.tmp / "registry/base/core/module.yaml"
+        p.write_text(p.read_text() + "requires: [domain/alpha]\n")
+        rc, out = self.run_cli("generate")
+        self.assertEqual(rc, 2)
+        self.assertIn("Layer inversion", out)
+        self.assertIsNone(re.search(r"[\uac00-\ud7a3]", out), out)
+
+    def test_ui_lang_reads_env_at_call_time(self):
+        self.lang("ko_KR.UTF-8")
+        self.assertEqual(harnist.ui_lang(), "ko")
+        os.environ["HARNIST_LANG"] = "en_US.UTF-8"
+        self.assertEqual(harnist.ui_lang(), "en")
+
+    def test_missing_translation_falls_back_to_korean(self):
+        self.lang("en")
+        self.assertNotIn("번역 없는 {x} 문구", harnist.EN)
+        self.assertEqual(harnist.tr("번역 없는 {x} 문구", x=1), "번역 없는 1 문구")
+        self.assertEqual(harnist.tr("변경 없음"), "No changes")
+
+    def test_every_tr_template_has_english(self):  # harnist.py·demo.py 의 tr("...") 을 소스에서 긁는다
+        import ast
+        here = Path(harnist.__file__).parent
+        src = (here / "harnist.py").read_text() + (here / "demo.py").read_text()
+        keys = [ast.literal_eval('"' + k + '"') for k in re.findall(r'(?<![\w.])tr\(\s*"((?:[^"\\]|\\.)*)"', src)]
+        self.assertGreater(len(keys), 100)
+        missing = sorted({k for k in keys if k not in harnist.EN})
+        self.assertEqual(missing, [])
+        for k in keys:  # 자리표시자가 같아야 한다
+            fields = lambda t: sorted(f for _, f, _, _ in __import__("string").Formatter().parse(t) if f)
+            self.assertEqual(fields(k), fields(harnist.EN[k]), k)
+
+    def golden_inputs(self):
+        M = harnist.Module
+        mods = [M("base/core", Path("/x"), {"layer": "base", "plugins": [{"id": "p@mk"}], "mcp": {"a": {}}}),
+                M("domain/alpha", Path("/x"), {"layer": "domain", "skills": ["s1", "s2"], "agents": ["w"]}),
+                M("project/p", Path("/x"), {"layer": "project"})]
+        spawn = {"max_parallel_agents": 3, "routing": {"w": "haiku"}, "rules": ["규칙 하나"]}
+        teams = {"t1": {"purpose": "목적", "members": ["w", "s1"], "lead": "w"}, "t2": {"members": ["s2"]}}
+        return mods, [(mods[0], "공통 규칙")], spawn, teams, "로컬"
+
+    def test_render_block_korean_unchanged(self):
+        self.lang("ko")
+        self.assertEqual(harnist.render_block(*self.golden_inputs()), self.GOLDEN_BLOCK)
+
+    def test_render_block_english(self):
+        self.lang("en")
+        out = harnist.render_block(*self.golden_inputs())
+        self.assertIn("## Harness modules", out)
+        self.assertIn("| project/p | project | rules only |", out)
+        self.assertIn("Run at most 3 subagents at the same time.", out)
 
 
 class DemoTest(unittest.TestCase):

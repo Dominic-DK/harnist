@@ -117,7 +117,7 @@ Claude Code 세션 기록(`~/.claude/projects/*.jsonl`)을 읽어, 레포마다 
 
 ### 10개 언어
 
-English, 한국어, 日本語, 中文, Español, Français, Русский, हिन्दी, Deutsch, Português를 지원합니다. 오른쪽 위 메뉴에서 고르거나 `?lang=ja`처럼 주소로 지정할 수 있습니다.
+English, 한국어, 日本語, 中文, Español, Français, Русский, हिन्दी, Deutsch, Português를 지원합니다. 오른쪽 위 메뉴에서 고르거나 `?lang=ja`처럼 주소로 지정할 수 있습니다. CLI는 `HARNIST_LANG`(`en` 또는 `ko`)을 따르고, 없으면 시스템 로케일을 따릅니다.
 
 ## 동작 방식
 
@@ -181,11 +181,12 @@ harnist audit [--mark]                            현재 전역 상태를 점검
 - 락은 마켓플레이스 변화를 감지만 하고, 플러그인 버전을 고정하지는 못합니다.
 - 사용 집계는 남아 있는 세션 기록 속 명시적 호출만 셉니다. Claude Code는 기본 30일만 보관합니다(`cleanupPeriodDays`).
 - 헤드리스 실행은 `CLAUDE_CODE_SESSION_ATTENDED`와 `CLAUDE_CODE_ENTRYPOINT`로 구분합니다. 공식 문서에 있는 값이 아니라 실측으로 확인한 값입니다.
+- CLI 출력과 생성되는 `CLAUDE.md` 블록은 영어가 기본이고, `HARNIST_LANG=ko`이거나 시스템 로케일이 한국어면 한국어로 나옵니다. 슬래시 명령 지시문은 영어지만, Claude는 사용자의 언어로 답합니다.
 
 ## 개발
 
 ```bash
-python3 -m unittest tests.test_harnist      # 테스트 50개
+python3 -m unittest tests.test_harnist      # 테스트 56개
 python3 harnist.py demo --dir /tmp/harnist-demo
 ```
 

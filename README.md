@@ -113,7 +113,7 @@ For a repo without a harness, the right-hand panel offers three steps:
 
 ### Ten languages
 
-English, 한국어, 日本語, 中文, Español, Français, Русский, हिन्दी, Deutsch and Português. Pick one from the top-right menu, or link with `?lang=ja`.
+The dashboard speaks English, 한국어, 日本語, 中文, Español, Français, Русский, हिन्दी, Deutsch and Português. Pick one from the top-right menu, or link with `?lang=ja`. The CLI follows `HARNIST_LANG` (`en` or `ko`) and falls back to your system locale.
 
 ## How it works
 
@@ -177,12 +177,12 @@ harnist audit [--mark]                            record the current global stat
 - The lock detects marketplace drift but cannot pin a plugin version.
 - Usage counts only explicit calls in retained session history. Claude Code keeps 30 days by default (`cleanupPeriodDays`).
 - Telling headless runs apart relies on `CLAUDE_CODE_SESSION_ATTENDED` and `CLAUDE_CODE_ENTRYPOINT`. These were observed, not documented.
-- The dashboard speaks ten languages, but CLI output, logs and the plugin's slash-command instructions are currently in Korean.
+- CLI output and the generated `CLAUDE.md` block are in English, or Korean when `HARNIST_LANG=ko` or a Korean system locale is set. Slash-command instructions are in English; Claude answers in your language either way.
 
 ## Development
 
 ```bash
-python3 -m unittest tests.test_harnist      # 50 tests
+python3 -m unittest tests.test_harnist      # 56 tests
 python3 harnist.py demo --dir /tmp/harnist-demo
 ```
 

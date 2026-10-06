@@ -1,70 +1,65 @@
 ---
 name: audit
 disable-model-invocation: true
-description: 전역 저장소(~/.claude 의 스킬·에이전트·플러그인·MCP·훅)를 실제 세션 사용 이력과 대조해 점검하고, 로컬 대시보드로 보여준 뒤, 불필요한 전역 항목을 레지스트리로 내리고 실제로 쓰는 레포에만 연결한다. 기존 프로젝트의 안 쓰는 로컬 항목도 정리한다. 플러그인 첫 설치 직후, 또는 "전역 점검", "글로벌 정리", "harnist audit" 요청 시.
+description: Audit the global scope (~/.claude skills, agents, plugins, MCP servers, hooks) against real session usage, show it in the local dashboard, archive what is unused or narrowly used into the registry and connect it only where it is used. Also trims unused local items in existing repos. Run right after installing the plugin, or on request.
 ---
 
-# harnist audit — 전역 점검과 슬림화
+# harnist audit — slim the global scope
 
-목표는 모든 세션에 항상 붙는 것을 실제로 모든 곳에서 쓰는 것만으로 줄이는 것이다. 나머지는 레지스트리에 모듈로 보관했다가 쓰는 레포에만 연결한다. 아무것도 지우지 않는다. 전역에서 떼는 항목은 레지스트리로 옮기거나 `.trash/`에 백업한다.
+The goal: only things every repo really uses should ride along in every session. Everything else lives in the registry as modules and is connected only to the repos that use it. Nothing is deleted — items leaving the global scope go to the registry or to `.trash/`.
 
 ```bash
 H="${HARNIST_HOME:-$(cat ~/.claude/.harnist/home 2>/dev/null || echo ~/.claude/plugins/marketplaces/harnist)}"
 ```
 
-## 1. 대시보드
+## 1. Dashboard
 
-`/harnist:view`와 같은 방법으로 서버를 띄우고 `http://127.0.0.1:8765/#audit`을 연다. 백그라운드로 `python3 "$H/harnist.py" view`를 실행하면 된다. 점검 탭에 판정별 표와 레포별 정리 후보가 나온다. 사용자가 화면을 보며 결정할 수 있게 주소를 먼저 알린다. 텍스트로도 같은 데이터를 본다.
+Start `python3 "$H/harnist.py" view` in the background and open `http://127.0.0.1:8765/#audit`. Share the address first so the user can follow along. The same data as text:
 
 ```bash
 python3 "$H/harnist.py" usage --days 90
 ```
 
-## 2. 판정 읽기
+Lead with the quality numbers at the top of the Audit tab: the skill list budget (are descriptions being truncated?) and per-repo fit (how much of what is loaded each repo actually uses). Tokens and cost are secondary.
 
-| 판정 | 뜻 | 제안 |
+## 2. Read the verdicts
+
+| Verdict | Meaning | Suggestion |
 | --- | --- | --- |
-| 미사용 | 기간 안에 한 번도 호출되지 않았다 | 레지스트리에 보관만 하고 전역에서 뗀다 (`--attach` 없이) |
-| 제한 | 1~2개 레포에서만 쓰였다 | 보관하고 그 레포에만 연결한다 (`--attach <레포>`) |
-| 공통 | 3개 이상 레포에서 쓰였다 | 전역 유지 |
-| 호출 기록 없음 | 플러그인이지만 호출 흔적이 없다 | 사용자에게 용도를 묻는다 |
-| 상시 실행 | 훅·훅 전용 플러그인이라 호출로 측정되지 않는다 | 보고만 한다 |
+| Unused | never called in the window | archive to the registry, remove from global (no `--attach`) |
+| Narrow | used in 1–2 repos | archive and connect only those repos (`--attach <repo>`) |
+| Common | used in 3+ repos | keep global |
+| No calls | a plugin with no recorded calls | ask the user what it is for |
+| Always runs | hooks and hook-only plugins, not measurable by calls | report only |
 
-판정은 근거일 뿐이다. 아래 경우는 숫자와 상관없이 사용자에게 먼저 묻는다.
+Verdicts are evidence, not orders. Ask the user first about seasonal tools used outside the window, helper skills called by other skills, and anything installed so recently it has no history yet. Handle the largest always-on character counts first — those characters ride in every session.
 
-- 기간 밖에서 쓰는 계절성 도구(분기 보고, 릴리스 때만 쓰는 것)
-- 다른 스킬이 내부에서 부르는 보조 스킬
-- 방금 설치해서 아직 기록이 없는 것
+## 3. Archive
 
-"상시" 글자 수가 큰 항목부터 다룬다. 그 글자들이 모든 세션의 컨텍스트에 매번 올라간다.
-
-## 3. 내리기
-
-항목마다 계획을 보이고 동의를 받는다. 비슷한 항목은 묶어서 한 번에 물어도 된다. 그다음 실행한다.
+Show the plan for each item (similar items may be grouped into one question), get consent, then run:
 
 ```bash
-python3 "$H/harnist.py" demote skill:<이름> --to domain/<모듈> --attach ~/Documents/github/<레포> --dry-run
-python3 "$H/harnist.py" demote skill:<이름> --to domain/<모듈> --attach ~/Documents/github/<레포>
+python3 "$H/harnist.py" demote skill:<name> --to domain/<module> --attach <repo> --dry-run
+python3 "$H/harnist.py" demote skill:<name> --to domain/<module> --attach <repo>
 ```
 
-- **종류**: `skill:`, `agent:`, `plugin:<이름@마켓>`, `mcp:`, 그리고 harnist 글로벌 모듈이면 `module:domain/<이름>`.
-- **묶기**: 같은 목적의 항목은 같은 `--to` 모듈로 묶는다. 예: 이미지·영상 도구는 `domain/media`.
-- **MCP**: 설정에 env나 headers가 있으면 비밀값이 git에 들어가지 않도록 demote가 거부한다. 이때는 값을 `${환경변수}`로 바꾼 모듈을 직접 만들고 사용자에게 `claude mcp remove <이름> -s user`를 안내한다.
-- **연결 중단**: 연결한 레포에서 생성이 충돌로 멈추면, 그 레포에서 `/harnist:sync`로 마무리한다.
+- Kinds: `skill:`, `agent:`, `plugin:<name@marketplace>`, `mcp:`, and `module:domain/<name>` for harnist global modules.
+- Group items with one purpose into the same `--to` module, for example image and video tools into `domain/media`.
+- Skills leave a stub with zero always-on cost, so `/name` keeps working; `harnist recall` brings one back to a repo or to global.
+- demote refuses MCP configs with `env` or `headers` so secrets never land in the registry. Build that module by hand with `${ENV_VAR}` values and tell the user to run `claude mcp remove <name> -s user`.
+- If generation stops in a connected repo, finish it there with `/harnist:sync`.
 
-## 4. 기존 프로젝트 슬림화
+## 4. Trim existing repos
 
-대시보드의 "레포별" 표, 또는 `usage --json`을 바탕으로 레포마다 두 가지를 본다.
+For each repo in the dashboard's per-repo list (or `usage --json`):
 
-- **안 쓴 로컬 항목**: 그 레포의 `.claude/`에 있는데 기간 안에 쓰이지 않은 스킬·에이전트·MCP다.
-  - harnist가 관리하는 레포면 해당 모듈을 `harnist detach <모듈> <레포>` 후 generate한다.
-  - 손으로 만든 것이면 지우지 말고 사용자 동의를 받아 project 모듈로 옮기거나 `.trash/`로 보낸다.
-- **실제로 쓴 전역 항목**: 3단계에서 전역에서 뗀 것 중 이 레포가 쓰던 것은 `--attach`로 이미 연결됐는지 확인한다.
+- **Unused local items** — skills, agents or MCP in that repo's `.claude/` not used in the window. If harnist manages the repo, `harnist detach <module> <repo>` and generate. If they are hand-made, do not delete; with consent, move them into a project module or to `.trash/`.
+- **Global items it used** — check that the ones archived in step 3 were connected here with `--attach`.
 
-## 5. 마무리
+## 5. Finish
 
 ```bash
 python3 "$H/harnist.py" audit --mark
 ```
 
-현재 전역 상태를 점검 완료로 기록한다. 이후 SessionStart 훅은 하루 한 번, 이 기록 이후 새로 생긴 전역 항목만 알린다. 변경 요약은 두 가지를 짧게 보고한다. 하나는 전역에서 뗀 항목과 줄어든 상시 글자 수, 다른 하나는 레포별로 연결한 것이다. 레지스트리에 새 모듈이 생겼으면 harnist 레포 커밋이 필요하다고 알린다. 세션을 다시 시작해야 반영된다.
+This records the current global state as audited. From then on the SessionStart hook mentions, at most once a day, only global items added after this point. Report briefly: what left the global scope and how much always-on text it removed, and what was connected per repo. Changes apply after a session restart.

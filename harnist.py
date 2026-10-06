@@ -1742,7 +1742,7 @@ def run_bench(label: str, root: Path, log=print) -> dict:
             log(tr("  기본 컨텍스트 {tokens:,} 토큰 · ${cost:.4f} · 총 {wall}초", tokens=p["ctx_tokens"], cost=p["cost_usd"], wall=p["wall_s"]))
         except (HarnistError, subprocess.TimeoutExpired) as e:
             log(tr("  실패: {error}", error=e))
-    out["recs"] = recommendations(rows, root) + listing_recs(listing_report(90))
+    out["recs"] = sorted(recommendations(rows, root) + listing_recs(listing_report(90)), key=lambda x: -x["chars"])
     d = bench_dir()
     f = d / f"{time.strftime('%Y%m%d-%H%M%S')}-{label}.json"
     f.write_text(json.dumps(out, ensure_ascii=False, indent=1))

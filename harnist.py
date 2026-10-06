@@ -1708,6 +1708,7 @@ def listing_recs(rows: list[dict], min_chars: int = 80) -> list[dict]:
 def set_skill_overrides(names: list[str], value: str | None, log=print) -> None:
     """~/.claude/settings.json 의 skillOverrides 키만 고친다. 고치기 전에 백업한다."""
     import time
+    names = [n for raw in names for n in raw.split()]  # 셸이 한 인자로 넘긴 목록("a b c")도 이름별로 나눈다
     p = claude_home() / "settings.json"
     d = read_json(p)
     bk = claude_home() / ".harnist" / "backups"
@@ -1767,7 +1768,7 @@ def savings(base: dict, cur: dict) -> dict:
         rate = b["cost_usd"] / b["ctx_tokens"] if b.get("ctx_tokens") else 0
         dtok = b["ctx_tokens"] - c["ctx_tokens"]
         res["per_session"][name] = {"tokens": dtok, "usd": dtok * rate, "billed_usd": b["cost_usd"] - c["cost_usd"],
-                                    "local_s": round(((b.get("seg") or {}).get("local") or 0) - ((c.get("seg") or {}).get("local") or 0), 2)}
+                                    "local_s": round(b["seg"]["local"] - c["seg"]["local"], 2) if (b.get("seg") and c.get("seg")) else None}
         res["why"][name] = explain_change(b, c)
     for d, sc in (cur or {}).get("sessions", {}).items():
         u, a = res["per_session"].get("user"), res["per_session"].get("agent")
@@ -2336,8 +2337,8 @@ def main(argv=None) -> int:
             base = read_json(bench_dir() / "baseline.json")
             sv = savings(base, out)
             for k, v in sv["per_session"].items():
-                print(tr("{profile}: 세션당 {tokens:+,} 토큰 · ${usd:+.4f}(토큰 기준) · 로컬 기동 {local:+}초 (기준선 대비 절감)",
-                         profile=k, tokens=v["tokens"], usd=v["usd"], local=v["local_s"]))
+                print(tr("{profile}: 세션당 {tokens:+,} 토큰 · ${usd:+.4f}(토큰 기준) · 로컬 기동 {local}초 (기준선 대비 절감)",
+                         profile=k, tokens=v["tokens"], usd=v["usd"], local="—" if v["local_s"] is None else f"{v['local_s']:+}"))
                 for w in sv["why"].get(k, []):
                     cs = "; ".join(tr("{kind} {x} {s}초", kind=c["kind"], x=c["x"], s=c["s"]) for c in w["causes"])
                     print(tr("  느려짐 {seg} +{d}초", seg=w["seg"], d=w["d"]) + (f" — {cs}" if cs else "")
@@ -2639,8 +2640,8 @@ EN = {
     "--global 또는 --attach <레포> 중 하나는 정한다": "Pass --global or --attach <repo>",
     "연결: {module} — {path}. 이제 그 레포에서 generate 한다.": "Attached: {module} — {path}. Now run generate in that repo.",
     "해제: {module} — {path}. 이제 그 레포에서 generate 한다.": "Detached: {module} — {path}. Now run generate in that repo.",
-    "{profile}: 세션당 {tokens:+,} 토큰 · ${usd:+.4f}(토큰 기준) · 로컬 기동 {local:+}초 (기준선 대비 절감)":
-        "{profile}: per session {tokens:+,} tokens · ${usd:+.4f} (token-based) · local startup {local:+}s (saved vs. baseline)",
+    "{profile}: 세션당 {tokens:+,} 토큰 · ${usd:+.4f}(토큰 기준) · 로컬 기동 {local}초 (기준선 대비 절감)":
+        "{profile}: per session {tokens:+,} tokens · ${usd:+.4f} (token-based) · local startup {local}s (saved vs. baseline)",
     "{kind} {x} {s}초": "{kind} {x} {s}s",
     "  느려짐 {seg} +{d}초": "  slower {seg} +{d}s",
     " (출력 {a}→{b} 토큰)": " (output {a}→{b} tokens)",

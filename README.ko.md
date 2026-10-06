@@ -196,6 +196,11 @@ python3 -m unittest tests.test_harnist      # 테스트 58개
 python3 harnist.py demo --dir /tmp/harnist-demo
 ```
 
+## 감사의 말
+
+- **[Tuist](https://github.com/tuist/tuist)** — iOS의 모듈화된 코드베이스를 다룰 수 있게 해 준 프로젝트 생성 도구입니다. `.xcodeproj`를 손으로 고치는 대신 `Project.swift` 매니페스트에 타깃과 의존성을 선언하고, Feature·Core·Shared 같은 계층 모듈로 나눈 뒤, `tuist generate`로 프로젝트를 만들어 냅니다. harnist는 이 구조를 그대로 빌려 왔습니다. 레포마다 매니페스트를 두고, 의존 규칙이 있는 계층 모듈을 쓰며, 손으로 고치는 대신 생성물을 쓰고, 락 파일과 의존 그래프를 둡니다.
+- **[revfactory/harness](https://github.com/revfactory/harness)** — 프로젝트를 읽고 그에 맞는 에이전트 팀과 스킬을 설계해 주는 Claude Code 플러그인입니다. `/harnist:init`도 같은 생각에서 출발하되, 그 결과를 공유 레지스트리에 연결된 모듈로 남겨 다른 레포가 다시 쓸 수 있게 합니다.
+
 ## 라이선스
 
 MIT

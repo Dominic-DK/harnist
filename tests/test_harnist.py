@@ -716,6 +716,8 @@ class ListingTest(GlobalFixture):
         self.assertTrue(list((self.home / ".harnist/backups").glob("settings-*.json")))
         harnist.set_skill_overrides(["dataviz"], None, log=lambda *_: None)
         self.assertNotIn("skillOverrides", json.loads((self.home / "settings.json").read_text()))
+        harnist.set_skill_overrides(["a b", "c"], "name-only", log=lambda *_: None)  # 셸이 한 인자로 넘긴 목록
+        self.assertEqual(json.loads((self.home / "settings.json").read_text())["skillOverrides"], {"a": "name-only", "b": "name-only", "c": "name-only"})
 
 
 if __name__ == "__main__":

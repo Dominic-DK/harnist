@@ -192,6 +192,11 @@ python3 -m unittest tests.test_harnist      # 58 tests
 python3 harnist.py demo --dir /tmp/harnist-demo
 ```
 
+## Acknowledgements
+
+- **[Tuist](https://github.com/tuist/tuist)** — the project generator that made modular iOS codebases manageable. Instead of hand-editing an `.xcodeproj`, you describe targets and their dependencies in a `Project.swift` manifest, keep features, core and shared code in layered modules, and let `tuist generate` produce the project. harnist borrows exactly that shape: a manifest per repo, layered modules with dependency rules, generated output instead of hand edits, a lock file, and a dependency graph.
+- **[revfactory/harness](https://github.com/revfactory/harness)** — the Claude Code plugin that reads a project and designs a team of agents and skills for it. `/harnist:init` follows the same idea, then keeps the result as modules connected to a shared registry so other repos can reuse them.
+
 ## License
 
 MIT

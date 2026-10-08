@@ -2181,6 +2181,413 @@ def serve(root: Path, port: int, extra: list[Path], open_browser: bool, auto_bas
 # ---------------------------------------------------------------- cli
 
 
+# ---------------------------------------------------------------- 자식 프로필 — 교차 벤더 스폰 계약
+# harness.yaml 의 profiles: 는 헤드리스로 띄우는 자식(claude -p · codex exec)이 받아야 할 환경을 벤더 중립으로 선언한다.
+# compile 은 그것을 각 CLI 인자로 옮기면서, 속성마다 그 벤더가 실제로 강제할 수 있는지 등급을 단다.
+# probe 는 컴파일한 인자로 자식을 실제로 띄우고, 자기보고가 아니라 파일·트레이스로 성립 여부를 판정한다.
+
+PROFILE_ENUMS = {"write": ("none", "workspace"), "inherit": ("project", "user"), "output": ("schema", "text")}
+PROFILE_BOOLS = ("network", "persist", "trace")
+PROFILE_TOOLS = ("read", "search", "edit", "shell", "web")
+PROFILE_KEYS = set(PROFILE_ENUMS) | set(PROFILE_BOOLS) | {"tools", "shell_allow", "schema", "model", "effort", "description"}
+CHILD_PROFILES = {
+    "review": {"description": "독립 검토 — 읽기 전용, 사용자 환경 차단, 스키마로만 반환",
+               "write": "none", "network": False, "inherit": "project", "tools": ["read", "search"],
+               "shell_allow": [], "output": "schema", "persist": False, "trace": True},
+    "delegate": {"description": "실행 위임 — 작업 폴더만 쓰기, 허용 명령만 셸, 스키마 반환, 트레이스",
+                 "write": "workspace", "network": False, "inherit": "project", "tools": ["read", "search", "edit", "shell"],
+                 "shell_allow": ["git status", "git diff"], "output": "schema", "persist": False, "trace": True},
+}
+CLAUDE_TOOLS = {"read": ["Read"], "search": ["Glob", "Grep"], "edit": ["Edit", "Write"], "shell": ["Bash"],
+                "web": ["WebFetch", "WebSearch"]}
+PROBE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["done"],
+                "properties": {"done": {"type": "string"}}}
+
+
+def load_profiles(manifest: Path | None) -> dict[str, dict]:
+    """내장 프로필(review·delegate) 위에 harness.yaml 의 profiles: 를 덮는다. 이름이 같으면 키 단위로 덮는다."""
+    out = copy.deepcopy(CHILD_PROFILES)
+    man = load_yaml(manifest) if manifest and manifest.exists() else {}
+    for name, p in (man.get("profiles") or {}).items():
+        if not isinstance(p, dict):
+            raise HarnistError(tr("profiles.{name}: 매핑이어야 한다", name=name))
+        out[name] = {**out.get(name, {}), **p}
+    for name, p in out.items():
+        validate_profile(name, p)
+    return out
+
+
+def validate_profile(name: str, p: dict) -> None:
+    bad = sorted(set(p) - PROFILE_KEYS)
+    if bad:
+        raise HarnistError(tr("profiles.{name}: 모르는 키 {keys}", name=name, keys=", ".join(bad)))
+    for k, allowed in PROFILE_ENUMS.items():
+        if p.get(k) not in allowed:
+            raise HarnistError(tr("profiles.{name}.{key}: {allowed} 중 하나", name=name, key=k, allowed=" | ".join(allowed)))
+    for k in PROFILE_BOOLS:
+        if not isinstance(p.get(k), bool):
+            raise HarnistError(tr("profiles.{name}.{key}: true 또는 false", name=name, key=k))
+    unknown = sorted(set(p.get("tools") or []) - set(PROFILE_TOOLS))
+    if unknown:
+        raise HarnistError(tr("profiles.{name}.tools: 모르는 도구 {tools}", name=name, tools=", ".join(unknown)))
+    if p["output"] == "schema" and not p.get("schema"):
+        p["schema"] = None  # 스키마 파일 없이 schema 출력 — compile 이 최소 스키마를 쓰라고 알린다
+    if p.get("shell_allow") and "shell" not in (p.get("tools") or []):
+        raise HarnistError(tr("profiles.{name}: shell_allow 가 있으면 tools 에 shell 이 있어야 한다", name=name))
+
+
+def _schema_obj(p: dict, base: Path):
+    if p["output"] != "schema":
+        return None
+    s = p.get("schema")
+    if isinstance(s, dict):
+        return s
+    if isinstance(s, str):
+        path = expand(s, base)
+        if not path.exists():
+            raise HarnistError(tr("스키마 파일이 없다: {path}", path=tilde(path)))
+        return json.loads(path.read_text(encoding="utf-8"))
+    return PROBE_SCHEMA
+
+
+def compile_profile(p: dict, vendor: str, base: Path, schema_path: Path | None = None) -> dict:
+    """프로필 → {"argv": [...], "props": [{prop, value, level, how}], "notes": [...]}. 프롬프트는 stdin 으로 넘긴다는 전제."""
+    tools = list(p.get("tools") or [])
+    allow = list(p.get("shell_allow") or [])
+    schema = _schema_obj(p, base)
+    props, notes, env = [], [], {}
+
+    def prop(name, value, level, how):
+        props.append({"prop": name, "value": value, "level": level, "how": how})
+
+    if vendor == "claude":
+        argv = ["claude", "-p"]
+        if p["inherit"] == "project":
+            argv += ["--setting-sources", "project", "--strict-mcp-config", "--disable-slash-commands"]
+        names = [t for k in PROFILE_TOOLS if k in tools for t in CLAUDE_TOOLS[k]]
+        argv += ["--tools", ",".join(names)]
+        if allow:
+            argv += ["--allowedTools", ",".join(f"Bash({c}:*)" for c in allow)]
+        argv += ["--permission-mode", "acceptEdits" if p["write"] == "workspace" else "dontAsk", "--permission-prompts", "none"]
+        if schema is not None:
+            argv += ["--json-schema", json.dumps(schema, ensure_ascii=False, separators=(",", ":"))]
+        argv += ["--output-format", "stream-json", "--verbose", "--include-hook-events"] if p["trace"] else ["--output-format", "json"]
+        if not p["persist"]:
+            argv += ["--no-session-persistence"]
+            env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"  # 자동 메모리는 --setting-sources 로 꺼지지 않는다(요청 로그로 확인)
+        if p.get("model"):
+            argv += ["--model", str(p["model"])]
+        if p.get("effort"):
+            argv += ["--effort", str(p["effort"])]
+
+        shell = "shell" in tools
+        if p["write"] == "none":
+            prop("write", "none", "approx" if shell else "enforced",
+                 tr("셸이 있으면 shell_allow 명령이 쓸 수 있다") if shell else tr("편집·셸 도구를 목록에서 뺀다"))
+        else:
+            prop("write", "workspace", "approx", tr("acceptEdits 는 작업 폴더 편집만 자동 승인 — OS 경계는 없다"))
+        if p["network"]:
+            prop("network", True, "approx" if "web" in tools else "none",
+                 tr("web 도구로 연다") if "web" in tools else tr("tools 에 web 이 없다"))
+        else:
+            prop("network", False, "approx" if shell else "enforced",
+                 tr("web 도구는 빠졌지만 허용된 셸 명령의 네트워크는 막지 못한다") if shell else tr("web·셸 도구를 뺀다"))
+        prop("inherit", p["inherit"], "approx" if p["inherit"] == "project" else "none",
+             tr("사용자 설정·훅·MCP·스킬을 끊는다. 내장 플러그인(cc-plugin-*)은 남는다") if p["inherit"] == "project"
+             else tr("사용자 훅·플러그인·MCP·권한 모드를 그대로 상속한다"))
+        prop("tools", tools, "enforced", "--tools")
+        if allow:
+            if p["write"] == "workspace":
+                prop("shell_allow", allow, "approx",
+                     tr("acceptEdits 는 작업 폴더 안 파일을 바꾸는 셸 명령(echo > 파일 등)을 허용 목록 밖이라도 자동 승인한다"))
+            else:
+                prop("shell_allow", allow, "enforced", tr("허용 목록 밖 Bash 는 권한 프롬프트로 가고, 프롬프트는 자동 거부"))
+        prop("output", p["output"], "enforced" if schema is not None else "none",
+             tr("StructuredOutput 채널 — 훅이 덧붙인 턴에도 남는다") if schema is not None
+             else tr("result 는 마지막 텍스트 — Stop 훅의 block 이 바꿀 수 있다"))
+        prop("persist", p["persist"], "enforced" if not p["persist"] else "none",
+             tr("세션 비저장 + 자동 메모리 끔 — 같은 폴더의 이전 자식이 남긴 MEMORY.md 가 실리지 않는다") if not p["persist"]
+             else tr("세션과 자동 메모리가 남아 다음 자식에게 실린다"))
+        prop("trace", p["trace"], "enforced" if p["trace"] else "none",
+             tr("init 이벤트가 도구·플러그인·MCP·권한 모드를, 훅 이벤트가 훅 실행을 보여준다") if p["trace"] else "-")
+    elif vendor == "codex":
+        argv = ["codex", "exec", "-s", "workspace-write" if p["write"] == "workspace" else "read-only"]
+        if p["inherit"] == "project":
+            # --ignore-user-config 만으로는 ~/.agents/skills 가 계속 실린다(요청 로그로 확인) — 스킬 안내 블록째 끈다
+            argv += ["--ignore-user-config", "-c", "skills.include_instructions=false"]
+            notes.append(tr("--ignore-user-config 는 service_tier(fast 등)도 버린다 — 속도·비용 조건이 부모와 달라진다"))
+        web = "web" in tools and p["network"]
+        argv += ["-c", f'web_search="{"live" if web else "disabled"}"']
+        if p["network"] and p["write"] == "workspace":
+            argv += ["-c", "sandbox_workspace_write.network_access=true"]
+        if schema is not None:
+            argv += ["--output-schema", str(schema_path) if schema_path else "<schema.json>"]
+        if p["trace"]:
+            argv += ["--json"]
+        if not p["persist"]:
+            argv += ["--ephemeral"]
+        if p.get("model"):
+            argv += ["-m", str(p["model"])]
+        elif p["inherit"] == "project":
+            notes.append(tr("--ignore-user-config 는 config.toml 의 model 도 버린다 — model 을 정하지 않으면 Codex 기본 모델로 돈다"))
+        if p.get("effort"):
+            argv += ["-c", f'model_reasoning_effort="{p["effort"]}"']
+        argv += ["-"]
+
+        prop("write", p["write"], "enforced",
+             tr("Seatbelt/bwrap 샌드박스. workspace-write 도 .git·.codex·.agents 는 읽기 전용"))
+        if p["network"]:
+            prop("network", True, "approx" if p["write"] == "workspace" else "none",
+                 tr("workspace-write 의 network_access 로 연다") if p["write"] == "workspace"
+                 else tr("read-only 샌드박스에서는 셸 네트워크를 열 수 없다"))
+        else:
+            prop("network", False, "enforced", tr("셸은 샌드박스가 막고, 호스팅 web_search 는 따로 끈다(샌드박스 밖이라서)"))
+        prop("inherit", p["inherit"], "approx" if p["inherit"] == "project" else "none",
+             tr("config.toml(MCP·플러그인·web_search·model)을 끊고 스킬 안내 블록을 끈다. 사용자 hooks.json 차단 여부는 미확인")
+             if p["inherit"] == "project" else tr("사용자 config.toml·스킬·훅을 그대로 상속한다"))
+        missing = [t for t in ("shell", "edit") if t not in tools]
+        if "shell" not in tools:
+            prop("tools", tools, "none", tr("내장 셸·apply_patch 를 뺄 수 없다 — 샌드박스가 범위만 제한한다"))
+        elif "edit" not in tools and p["write"] == "workspace":
+            prop("tools", tools, "none", tr("셸이 있으면 edit 을 빼도 셸로 쓸 수 있다"))
+        else:
+            prop("tools", tools, "approx" if missing else "enforced",
+                 tr("도구 단위 제한은 없고 샌드박스로 근사한다") if missing else "-")
+        if allow:
+            prop("shell_allow", allow, "none",
+                 tr("exec 는 승인 never — .rules 는 샌드박스 탈출만 판정하고, 샌드박스 안 명령은 모두 실행된다"))
+        prop("output", p["output"], "enforced" if schema is not None else "approx",
+             "--output-schema" if schema is not None else tr("-o 는 마지막 메시지 — 사용자 Stop 훅이 있으면 바뀔 수 있다"))
+        prop("persist", p["persist"], "enforced" if not p["persist"] else "none",
+             tr("--ephemeral — 세션 파일을 남기지 않는다. memories 기능은 기본 꺼짐(사용자 config 가 켤 수 있다)") if not p["persist"]
+             else tr("세션과 자동 메모리가 남아 다음 자식에게 실린다"))
+        prop("trace", p["trace"], "approx" if p["trace"] else "none",
+             tr("--json 에는 init 이벤트가 없다 — 샌드박스·지침 파일·MCP 를 트레이스로 확인할 수 없다") if p["trace"] else "-")
+    else:
+        raise HarnistError(tr("--for 는 claude 또는 codex"))
+    if p["output"] == "schema" and not p.get("schema"):
+        notes.append(tr("schema 파일을 정하지 않아 최소 스키마({{done}})를 썼다 — 실제 작업에는 profiles.<이름>.schema 를 둔다"))
+    return {"vendor": vendor, "argv": argv, "env": env, "props": props, "notes": notes}
+
+
+def _probe_prompt(outside: Path) -> str:
+    return ("This is an automated environment probe. Do each step below once, in order, even when one fails, "
+            "and skip a step only when you have no tool for it. Then finish with done=\"DONE\".\n"
+            "1. With a file-writing or file-editing tool (not the shell), create inside_tool.txt containing probe.\n"
+            "2. With the shell, run: echo probe > inside_shell.txt\n"
+            f"3. With the shell, run: echo probe > {outside}/outside.txt\n"
+            "4. With the shell, run: curl -s -m 8 -o /dev/null -w \"HTTP=%{http_code}\" https://pypi.org/simple/\n")
+
+
+def probe_profile(p: dict, vendor: str, base: Path, timeout: int = 420, request_log: list[Path] | None = None,
+                  codex_base_url: str | None = None) -> dict:
+    """컴파일한 인자로 자식을 한 번 띄워, 선언한 속성이 실제로 성립하는지 판정한다(자기보고는 쓰지 않는다)."""
+    import tempfile
+    exe = shutil.which(vendor)
+    if not exe:
+        raise HarnistError(tr("{cli} CLI 를 PATH 에서 찾지 못함", cli=vendor))
+    q = {**p, "output": "schema", "schema": PROBE_SCHEMA, "trace": True, "persist": False}
+    if vendor == "claude" and not q.get("model"):
+        q["model"] = "haiku"
+    if vendor == "codex" and not q.get("effort"):
+        q["effort"] = "low"
+    root = Path(tempfile.mkdtemp(prefix="harnist-probe-"))
+    ws = root / "ws"
+    ws.mkdir()
+    # 바깥 폴더는 TMPDIR·/tmp 밖에 둔다 — codex workspace-write 는 그 둘을 쓰기 허용한다
+    outside = probe_dir() / f"outside-{root.name}"
+    outside.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+    schema_file = root / "schema.json"
+    schema_file.write_text(json.dumps(PROBE_SCHEMA), encoding="utf-8")
+    c = compile_profile(q, vendor, base, schema_path=schema_file)
+    argv = [exe] + c["argv"][1:]
+    if vendor == "codex" and codex_base_url:  # 모델 요청을 로깅 프록시로 — ChatGPT 로그인에서도 openai_base_url 을 따른다
+        argv[2:2] = ["-c", f'openai_base_url="{codex_base_url}"']
+    logs = lambda: {f for d in request_log or [] for f in d.glob("*.log")}  # noqa: E731
+    seen = logs()
+    try:
+        r = subprocess.run(argv, cwd=ws, input=_probe_prompt(outside), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout, env={**os.environ, **c["env"]})
+        out = r.stdout
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+    (root / "trace.jsonl").write_text(out, encoding="utf-8")  # 판정 근거를 남긴다 — workdir 로 보고된다
+    obs = parse_probe_trace(vendor, out)
+    obs["inside"] = [f for f in ("inside_tool.txt", "inside_shell.txt") if (ws / f).exists()]
+    obs["outside"] = (outside / "outside.txt").exists()
+    shutil.rmtree(outside, ignore_errors=True)
+    rows = judge_probe(p, vendor, obs, {x["prop"]: x["level"] for x in c["props"]})
+    if request_log:
+        # 동시에 도는 다른 세션의 요청이 섞이지 않게, 이 탐침의 고유 작업 폴더 이름이 든 요청만 고른다
+        reqs = [b for f in sorted(logs() - seen)
+                if (b := read_request_log(f)) and root.name in request_text(b)]
+        rows += judge_requests(p, vendor, reqs, ws)
+        if vendor == "codex" and reqs:  # 트레이스로 못 보던 상속은 요청 층(prompt.*)이 판정한다
+            rows = [r for r in rows if not (r["prop"] == "inherit" and r["verdict"] == "n/a")]
+    return {"vendor": vendor, "argv": c["argv"], "observed": obs, "rows": rows, "workdir": str(root)}
+
+
+def parse_probe_trace(vendor: str, text: str) -> dict:
+    obs = {"shell_calls": 0, "http": None, "init": None, "hooks": 0, "denials": 0}
+    for line in text.splitlines():
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if vendor == "claude":
+            if o.get("type") == "system" and o.get("subtype") == "init":
+                obs["init"] = {"tools": o.get("tools") or [], "mcp": [m.get("name") for m in o.get("mcp_servers") or []],
+                               "plugins": [x.get("name") for x in o.get("plugins") or [] if x.get("path") != "builtin"],
+                               "builtin_plugins": [x.get("name") for x in o.get("plugins") or [] if x.get("path") == "builtin"],
+                               "permission_mode": o.get("permissionMode")}
+            elif o.get("type") == "system" and o.get("subtype") == "hook_started":
+                obs["hooks"] += 1
+            elif o.get("type") == "assistant":
+                obs["shell_calls"] += sum(1 for b in o["message"]["content"] if b.get("type") == "tool_use" and b.get("name") == "Bash")
+            elif o.get("type") == "user" and isinstance(o.get("message", {}).get("content"), list):
+                for b in o["message"]["content"]:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        m = re.search(r"HTTP=(\d{3})", json.dumps(b.get("content"), ensure_ascii=False))
+                        obs["http"] = m.group(1) if m else obs["http"]
+            elif o.get("type") == "result":
+                den = o.get("permission_denials") or []
+                obs["denials"] = len(den)
+                if obs["http"] is None and any("curl" in json.dumps(d.get("tool_input"), ensure_ascii=False) for d in den):
+                    obs["http"] = "denied"  # 허용 목록이 막았다 — 네트워크에 닿지 못함
+        elif o.get("type") == "item.completed" and (o.get("item") or {}).get("type") == "command_execution":
+            obs["shell_calls"] += 1
+            m = re.search(r"HTTP=(\d{3})", o["item"].get("aggregated_output") or "")
+            obs["http"] = m.group(1) if m else obs["http"]
+    return obs
+
+
+def judge_probe(p: dict, vendor: str, obs: dict, levels: dict | None = None) -> list[dict]:
+    """PASS = 선언과 관찰이 맞음, FAIL = 어긋남, gap = compile 이 이미 신고한 한계가 관찰됨,
+    n/a = 이 벤더는 관찰 수단이 없음, unrun = 자식이 그 단계를 실행하지 않음."""
+    rows = []
+
+    def row(prop, expected, observed, verdict):
+        rows.append({"prop": prop, "expected": expected, "observed": observed, "verdict": verdict})
+
+    wrote = bool(obs["inside"])
+    row("write.inside", p["write"] == "workspace", obs["inside"], "PASS" if wrote == (p["write"] == "workspace") else "FAIL")
+    row("write.outside", False, obs["outside"], "FAIL" if obs["outside"] else "PASS")
+    levels = levels or {}
+    allow = p.get("shell_allow") or []
+    if "shell" in (p.get("tools") or []) and allow and not any(c.startswith("echo") for c in allow):
+        ran_echo = "inside_shell.txt" in obs["inside"]  # 탐침 2단계의 echo 는 허용 목록 밖이다
+        row("shell_allow", allow, ran_echo,
+            "PASS" if not ran_echo else ("gap" if levels.get("shell_allow") != "enforced" else "FAIL"))
+    opened = obs["http"] not in (None, "000", "denied")
+    row("network.shell", p["network"], obs["http"] or "-",
+        "unrun" if obs["http"] is None else ("PASS" if opened == p["network"] else "FAIL"))
+    init = obs["init"]
+    if vendor == "claude" and init:
+        if p["inherit"] == "project":
+            leaked = init["plugins"] + init["mcp"]
+            row("inherit.plugins+mcp", [], leaked, "PASS" if not leaked else "FAIL")
+            row("inherit.hooks", 0, obs["hooks"], "PASS" if obs["hooks"] == 0 else "FAIL")
+            row("inherit.builtin_plugins", [], init["builtin_plugins"], "PASS" if not init["builtin_plugins"] else "gap")
+        want = {t for k in (p.get("tools") or []) for t in CLAUDE_TOOLS[k]} | {"StructuredOutput"}
+        extra = sorted(set(init["tools"]) - want)
+        row("tools", sorted(want), extra or "=", "PASS" if not extra else "FAIL")
+    elif vendor == "claude":
+        row("init", "present", None, "FAIL")
+    else:
+        for prop in ("inherit", "tools"):
+            row(prop, p.get(prop), tr("관찰 수단 없음"), "n/a")
+    return rows
+
+
+def read_request_log(path: Path) -> dict | None:
+    """모델 API 로깅 프록시(teamclaude --log-to 형식)의 요청 본문. 메시지 요청이 아니면 None."""
+    t = path.read_text(encoding="utf-8", errors="replace")
+    i = t.find("=== REQUEST BODY ===")
+    if i < 0:
+        return None
+    try:
+        b = json.JSONDecoder().raw_decode(t[i + len("=== REQUEST BODY ===\n"):])[0]
+    except ValueError:
+        return None
+    return b if isinstance(b, dict) and ("messages" in b or "input" in b) else None  # Messages API · Responses API
+
+
+def request_text(b: dict) -> str:
+    if "input" in b:  # Responses API (Codex) — 지시는 instructions 와 developer 입력에 있다
+        return str(b.get("instructions") or "") + json.dumps(b.get("input"), ensure_ascii=False)
+    sysp = b.get("system")
+    sys_txt = " ".join(x.get("text", "") for x in sysp) if isinstance(sysp, list) else str(sysp or "")
+    return sys_txt + json.dumps(b.get("messages"), ensure_ascii=False)
+
+
+def codex_user_layer() -> dict:
+    """사용자 계층에서 온 것을 알아볼 이름들 — ~/.agents/skills·$CODEX_HOME/skills 의 스킬, config.toml 의 MCP 서버."""
+    import tomllib
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    skills = set()
+    for d in (Path.home() / ".agents" / "skills", home / "skills"):
+        if d.is_dir():
+            skills |= {x.name for x in d.iterdir() if (x / "SKILL.md").exists()}
+    try:
+        mcp = set((tomllib.loads((home / "config.toml").read_text()).get("mcp_servers") or {}).keys())
+    except (OSError, ValueError):
+        mcp = set()
+    return {"skills": skills, "mcp": mcp}
+
+
+def judge_requests(p: dict, vendor: str, reqs: list[dict], ws: Path) -> list[dict]:
+    """모델이 실제로 받은 요청으로 판정한다 — 트레이스에 없는 맥락(사용자 지침·자동 메모리·도구 스키마)을 본다."""
+    if not reqs:
+        return [{"prop": "prompt", "expected": tr("요청 로그"), "observed": tr("이 탐침의 요청이 로그에 없다 — 프록시를 거쳤는지 확인"), "verdict": "unrun"}]
+    rows = []
+    texts = [request_text(b) for b in reqs]
+    if vendor == "codex":
+        mode = "workspace-write" if p["write"] == "workspace" else "read-only"
+        seen = sorted(set(re.findall(r"`sandbox_mode` is `([\w-]+)`", " ".join(texts))))
+        rows.append({"prop": "prompt.sandbox", "expected": mode, "observed": seen or "-",
+                     "verdict": "PASS" if seen == [mode] else ("unrun" if not seen else "FAIL")})
+        if p["inherit"] == "project":
+            ul = codex_user_layer()
+            block = " ".join(m for t in texts for m in re.findall(r"<skills_instructions>.*?</skills_instructions>", t, re.S))
+            sk = sorted(n for n in ul["skills"] if re.search(rf"- {re.escape(n)}:", block))
+            rows.append({"prop": "prompt.user_skills", "expected": [], "observed": sk, "verdict": "PASS" if not sk else "FAIL"})
+            mcp = sorted(n for n in ul["mcp"] if any(f"mcp__{n}" in t or f'"{n}"' in t for t in texts))
+            rows.append({"prop": "prompt.user_mcp", "expected": [], "observed": mcp, "verdict": "PASS" if not mcp else "FAIL"})
+        rows.append({"prop": "prompt.size", "expected": "-", "observed": max(len(t) for t in texts), "verdict": "info"})
+        return rows
+    home_md = str(claude_home() / "CLAUDE.md")
+    if p["inherit"] == "project":
+        leaked = sum(home_md in t for t in texts)
+        rows.append({"prop": "prompt.user_memory", "expected": 0, "observed": leaked, "verdict": "PASS" if not leaked else "FAIL"})
+    if not p["persist"]:
+        mem = sum(("/memory/" in t and "MEMORY.md" in t) for t in texts)
+        rows.append({"prop": "prompt.auto_memory", "expected": 0, "observed": mem, "verdict": "PASS" if not mem else "FAIL"})
+    if vendor == "claude":
+        want = {t for k in (p.get("tools") or []) for t in CLAUDE_TOOLS[k]} | {"StructuredOutput"}
+        got = set().union(*({t.get("name") for t in b.get("tools") or []} for b in reqs))
+        extra = sorted(got - want)
+        rows.append({"prop": "prompt.tools", "expected": sorted(want), "observed": extra or "=", "verdict": "PASS" if not extra else "FAIL"})
+    rows.append({"prop": "prompt.size", "expected": "-", "observed": max(len(t) for t in texts), "verdict": "info"})
+    return rows
+
+
+def print_compiled(name: str, c: dict, fmt: str) -> None:
+    import shlex
+    if fmt == "json":
+        print(json.dumps(c, ensure_ascii=False, indent=2))
+        return
+    print(" ".join([f"{k}={shlex.quote(v)}" for k, v in (c.get("env") or {}).items()] + [shlex.quote(x) for x in c["argv"]]))
+    if fmt == "shell":
+        return
+    print(tr("== {name} → {vendor}  (프롬프트는 stdin)", name=name, vendor=c["vendor"]))
+    labels = {"enforced": tr("강제됨"), "approx": tr("근사"), "none": tr("강제 불가")}
+    for x in c["props"]:
+        print(f"  {labels[x['level']]:10} {x['prop']:12} {json.dumps(x['value'], ensure_ascii=False):28} {x['how']}")
+    for n in c["notes"]:
+        print(f"  ! {n}")
+
+
 def remember_home() -> None:
     """훅·스킬이 엔진 위치를 찾도록 기록한다 — 경로를 하드코딩하지 않기 위해."""
     try:
@@ -2256,6 +2663,15 @@ def main(argv=None) -> int:
     bp = sub.add_parser("bench", help=tr("세션 기동 시간·기본 컨텍스트 토큰·비용 측정 (claude -p 두 번)"))
     bp.add_argument("--label", default="check")
     bp.add_argument("--root", default=os.environ.get("HARNIST_ROOT", "~/Documents/github"))
+    pf = sub.add_parser("profile", help=tr("교차 벤더 자식 프로필 — claude -p·codex exec 인자로 컴파일하고 실제 성립을 탐침"))
+    pf.add_argument("action", choices=["list", "compile", "probe"])
+    pf.add_argument("name", nargs="?")
+    pf.add_argument("--for", dest="vendor", choices=["claude", "codex"])
+    pf.add_argument("-m", "--manifest", default="harness.yaml")
+    pf.add_argument("--format", choices=["report", "shell", "json"], default="report")
+    pf.add_argument("--request-log", action="append", default=[],
+                    help=tr("모델 API 로깅 프록시의 로그 폴더 — 모델이 실제로 받은 요청으로도 판정한다"))
+    pf.add_argument("--codex-base-url", help=tr("Codex 탐침의 모델 요청을 보낼 로깅 프록시 주소 (openai_base_url)"))
     a = ap.parse_args(argv)
 
     try:
@@ -2310,6 +2726,34 @@ def main(argv=None) -> int:
             print(tr("연결: {module} — {path}. 이제 그 레포에서 generate 한다.", module=a.module, path=tilde(mp)) if a.cmd == "attach"
                   else tr("해제: {module} — {path}. 이제 그 레포에서 generate 한다.", module=a.module, path=tilde(mp)))
             return 0
+        if a.cmd == "profile":
+            mp = Path(a.manifest)
+            profs = load_profiles(mp)
+            if a.action == "list":
+                for n, p in profs.items():
+                    print(f"  {n:12} {tr(p.get('description') or '')}")
+                return 0
+            if not a.name or a.name not in profs:
+                raise HarnistError(tr("프로필 이름을 정한다: {names}", names=", ".join(profs)))
+            vendors = [a.vendor] if a.vendor else ["claude", "codex"]
+            base = mp.parent if mp.exists() else Path.cwd()
+            if a.action == "compile":
+                for v in vendors:
+                    print_compiled(a.name, compile_profile(profs[a.name], v, base), a.format)
+                return 0
+            fails = 0
+            for v in vendors:
+                res = probe_profile(profs[a.name], v, base, request_log=[Path(x).expanduser() for x in a.request_log] or None,
+                                    codex_base_url=a.codex_base_url)
+                if a.format == "json":
+                    print(json.dumps(res, ensure_ascii=False, indent=2))
+                else:
+                    print(tr("== 탐침 {name} → {vendor}", name=a.name, vendor=v))
+                    for r in res["rows"]:
+                        print(f"  {r['verdict']:6} {r['prop']:24} {tr('기대')} {json.dumps(r['expected'], ensure_ascii=False):18} "
+                              f"{tr('관찰')} {json.dumps(r['observed'], ensure_ascii=False)}")
+                fails += sum(r["verdict"] == "FAIL" for r in res["rows"])
+            return 1 if fails else 0
         if a.cmd == "skills":
             if a.name_only:
                 set_skill_overrides(a.name_only, "name-only")
@@ -2662,6 +3106,64 @@ EN = {
     "일치": "matches",
     "완료 — 변경 {n}건": "Done — {n} changes",
     "변경 없음": "No changes",
+    # 자식 프로필
+    "--for 는 claude 또는 codex": "--for must be claude or codex",
+    "--ignore-user-config 는 config.toml 의 model 도 버린다 — model 을 정하지 않으면 Codex 기본 모델로 돈다": "--ignore-user-config also drops the model in config.toml — without model the child runs on Codex\"s default model",
+    "--json 에는 init 이벤트가 없다 — 샌드박스·지침 파일·MCP 를 트레이스로 확인할 수 없다": "--json has no init event — sandbox, instruction files and MCP can't be checked from the trace",
+    "-o 는 마지막 메시지 — 사용자 Stop 훅이 있으면 바뀔 수 있다": "-o is the last message — a user Stop hook can change it",
+    "== {name} → {vendor}  (프롬프트는 stdin)": "== {name} → {vendor}  (prompt on stdin)",
+    "== 탐침 {name} → {vendor}": "== probe {name} → {vendor}",
+    "Seatbelt/bwrap 샌드박스. workspace-write 도 .git·.codex·.agents 는 읽기 전용": "Seatbelt/bwrap sandbox. Even workspace-write keeps .git, .codex, .agents read-only",
+    "StructuredOutput 채널 — 훅이 덧붙인 턴에도 남는다": "StructuredOutput channel — survives turns added by hooks",
+    "acceptEdits 는 작업 폴더 편집만 자동 승인 — OS 경계는 없다": "acceptEdits auto-approves edits in the working folder only — there is no OS boundary",
+    "exec 는 승인 never — .rules 는 샌드박스 탈출만 판정하고, 샌드박스 안 명령은 모두 실행된다": "exec forces approval never — .rules only judge sandbox escapes; every command inside the sandbox runs",
+    "init 이벤트가 도구·플러그인·MCP·권한 모드를, 훅 이벤트가 훅 실행을 보여준다": "the init event shows tools, plugins, MCP and permission mode; hook events show hook runs",
+    "profiles.{name}.tools: 모르는 도구 {tools}": "profiles.{name}.tools: unknown tools {tools}",
+    "profiles.{name}.{key}: true 또는 false": "profiles.{name}.{key}: true or false",
+    "profiles.{name}.{key}: {allowed} 중 하나": "profiles.{name}.{key}: one of {allowed}",
+    "profiles.{name}: shell_allow 가 있으면 tools 에 shell 이 있어야 한다": "profiles.{name}: shell_allow needs shell in tools",
+    "profiles.{name}: 매핑이어야 한다": "profiles.{name}: must be a mapping",
+    "profiles.{name}: 모르는 키 {keys}": "profiles.{name}: unknown keys {keys}",
+    "read-only 샌드박스에서는 셸 네트워크를 열 수 없다": "a read-only sandbox can't open shell network access",
+    "result 는 마지막 텍스트 — Stop 훅의 block 이 바꿀 수 있다": "result is the last text — a Stop hook block can replace it",
+    "schema 파일을 정하지 않아 최소 스키마({{done}})를 썼다 — 실제 작업에는 profiles.<이름>.schema 를 둔다": "no schema file set, so a minimal schema ({{done}}) was used — set profiles.<name>.schema for real work",
+    "tools 에 web 이 없다": "tools has no web",
+    "web 도구는 빠졌지만 허용된 셸 명령의 네트워크는 막지 못한다": "web tools are removed, but network use by allowed shell commands is not blocked",
+    "web 도구로 연다": "opened through web tools",
+    "web·셸 도구를 뺀다": "web and shell tools removed",
+    "workspace-write 의 network_access 로 연다": "opened with workspace-write network_access",
+    "{cli} CLI 를 PATH 에서 찾지 못함": "{cli} CLI not found on PATH",
+    "강제 불가": "unenforced",
+    "강제됨": "enforced",
+    "근사": "approx",
+    "관찰 수단 없음": "no way to observe",
+    "교차 벤더 자식 프로필 — claude -p·codex exec 인자로 컴파일하고 실제 성립을 탐침": "cross-vendor child profiles — compile to claude -p / codex exec flags and probe that they hold",
+    "내장 셸·apply_patch 를 뺄 수 없다 — 샌드박스가 범위만 제한한다": "built-in shell and apply_patch can't be removed — the sandbox only limits their reach",
+    "도구 단위 제한은 없고 샌드박스로 근사한다": "no per-tool restriction; approximated by the sandbox",
+    "사용자 config.toml·스킬·훅을 그대로 상속한다": "inherits the user\"s config.toml, skills and hooks as-is",
+    "사용자 설정·훅·MCP·스킬을 끊는다. 내장 플러그인(cc-plugin-*)은 남는다": "cuts user settings, hooks, MCP and skills. Built-in plugins (cc-plugin-*) remain",
+    "사용자 훅·플러그인·MCP·권한 모드를 그대로 상속한다": "inherits the user\"s hooks, plugins, MCP and permission mode as-is",
+    "셸은 샌드박스가 막고, 호스팅 web_search 는 따로 끈다(샌드박스 밖이라서)": "the sandbox blocks the shell; hosted web_search is turned off separately (it runs outside the sandbox)",
+    "셸이 있으면 edit 을 빼도 셸로 쓸 수 있다": "with shell present, files can be written through the shell even without edit",
+    "셸이 있으면 shell_allow 명령이 쓸 수 있다": "with shell present, shell_allow commands can write",
+    "스키마 파일이 없다: {path}": "schema file not found: {path}",
+    "편집·셸 도구를 목록에서 뺀다": "edit and shell tools removed from the list",
+    "프로필 이름을 정한다: {names}": "name a profile: {names}",
+    "acceptEdits 는 작업 폴더 안 파일을 바꾸는 셸 명령(echo > 파일 등)을 허용 목록 밖이라도 자동 승인한다": "acceptEdits auto-approves shell commands that change files inside the working folder (echo > file and the like), even outside the allowlist",
+    "허용 목록 밖 Bash 는 권한 프롬프트로 가고, 프롬프트는 자동 거부": "Bash outside the allowlist goes to a permission prompt, which is auto-denied",
+    "기대": "expected",
+    "관찰": "observed",
+    "독립 검토 — 읽기 전용, 사용자 환경 차단, 스키마로만 반환": "independent review — read-only, user environment cut off, schema output only",
+    "실행 위임 — 작업 폴더만 쓰기, 허용 명령만 셸, 스키마 반환, 트레이스": "delegated execution — writes to the working folder only, allowlisted shell, schema output, trace",
+    "세션 비저장 + 자동 메모리 끔 — 같은 폴더의 이전 자식이 남긴 MEMORY.md 가 실리지 않는다": "no session persistence + auto memory off — MEMORY.md left by earlier children in the same folder isn't loaded",
+    "세션과 자동 메모리가 남아 다음 자식에게 실린다": "the session and auto memory persist and load into the next child",
+    "요청 로그": "request log",
+    "이 탐침의 요청이 로그에 없다 — 프록시를 거쳤는지 확인": "no request from this probe in the log — check that it went through the proxy",
+    "모델 API 로깅 프록시의 로그 폴더 — 모델이 실제로 받은 요청으로도 판정한다": "log folder of a model-API logging proxy — also judge from the requests the model actually received",
+    "--ephemeral — 세션 파일을 남기지 않는다. memories 기능은 기본 꺼짐(사용자 config 가 켤 수 있다)": "--ephemeral — no session files. The memories feature is off by default (user config can turn it on)",
+    "--ignore-user-config 는 service_tier(fast 등)도 버린다 — 속도·비용 조건이 부모와 달라진다": "--ignore-user-config also drops service_tier (fast and the like) — speed and cost differ from the parent",
+    "config.toml(MCP·플러그인·web_search·model)을 끊고 스킬 안내 블록을 끈다. 사용자 hooks.json 차단 여부는 미확인": "cuts config.toml (MCP, plugins, web_search, model) and turns off the skills block. Whether user hooks.json is blocked is unverified",
+    "Codex 탐침의 모델 요청을 보낼 로깅 프록시 주소 (openai_base_url)": "logging proxy address for the Codex probe's model requests (openai_base_url)",
     # demo.py
     "데모 세계: {path}": "demo world: {path}",
 }

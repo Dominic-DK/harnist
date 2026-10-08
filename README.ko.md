@@ -119,6 +119,31 @@ Claude Code 세션 기록(`~/.claude/projects/*.jsonl`)을 읽어, 레포마다 
 2. **전용 에이전트·스킬 설계**: 목적을 적으면 `claude -p`가 `/harnist:init` 절차를 무인으로 실행합니다. 어떤 모듈도 덮지 못하는 것만 설계해 `.harnist/modules/`에 프로젝트 모듈로 남기고, 진행 로그를 패널로 흘려보냅니다.
 3. **대화형으로 하기**: 그 폴더에서 `claude`를 띄운 터미널을 엽니다. macOS는 Terminal, Windows는 Windows Terminal이나 cmd, Linux는 흔히 쓰는 터미널 중 있는 것을 씁니다. 열 수 없으면 복사할 명령을 보여줍니다.
 
+### 자식 프로필 — claude -p·codex exec 를 같은 계약으로 띄운다
+
+헤드리스로 띄운 자식은 부모가 보지 못하는 환경을 받습니다. `claude -p` 자식은 사용자 훅·플러그인·MCP·권한 모드를 그대로 상속하고, `codex exec` 자식은 CLAUDE.md를 읽지 않고 기본 샌드박스가 읽기 전용입니다. 상속받은 Stop 훅이 반환값을 바꿔 놓을 수도 있습니다. `profiles:`는 자식이 받아야 할 환경을 벤더 중립으로 선언합니다.
+
+```yaml
+profiles:
+  review:                       # 내장 — 독립 검토
+    write: none                 # none | workspace
+    network: false
+    inherit: project            # project = 사용자 계층 차단 | user = 그대로 상속
+    tools: [read, search]       # read search edit shell web
+    output: schema              # schema | text
+    schema: .handoff/review.schema.json
+  delegate:                     # 내장 — 실행 위임
+    write: workspace
+    tools: [read, search, edit, shell]
+    shell_allow: [git status, git diff, python3 run_tests.py]
+```
+
+`harnist profile compile review --for codex`는 선언을 그 CLI의 인자로 옮기고, 속성마다 **강제됨 / 근사 / 강제 불가**를 붙입니다. 같은 선언이라도 벤더마다 지키는 방식이 다릅니다. Codex는 셸 허용 목록을 강제하지 못하고(exec는 승인 never), Claude는 허용된 셸 명령의 네트워크를 막지 못합니다. `harnist profile probe review`는 컴파일한 인자로 자식을 실제로 한 번 띄웁니다. 그리고 자기보고가 아니라 파일 존재 여부와 트레이스 속 도구 출력으로 판정합니다. 결과는 PASS, FAIL(선언과 어긋남), gap(compile이 이미 신고한 한계), n/a(그 벤더에 관찰 수단이 없음) 중 하나입니다. FAIL이 있으면 exit 1입니다. 탐침은 실제 세션을 벤더마다 한 번씩 띄웁니다. 모델을 정하지 않으면 Claude는 haiku, Codex는 reasoning effort low로 돌립니다.
+
+자식을 모델 API 로깅 프록시(예: `teamclaude server --log-to DIR` + `ANTHROPIC_BASE_URL`)에 통과시키고 `--request-log DIR`을 주면, 모델이 실제로 받은 요청으로도 판정합니다. 사용자 CLAUDE.md가 실렸는지, 자동 메모리 지시가 들어갔는지, 도구 스키마가 선언과 같은지를 봅니다. 트레이스에는 이것들이 나오지 않습니다. 참고로 Claude의 자동 메모리는 `--setting-sources project`로 꺼지지 않아서, `persist: false`는 `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`을 함께 냅니다. 이것도 요청 로그로 확인했습니다.
+
+Codex도 같은 방식으로 확인할 수 있습니다. `--codex-base-url URL`을 주면 탐침이 `-c openai_base_url=…`을 붙입니다. ChatGPT 로그인 모드에서도 이 주소를 따릅니다. 이렇게 하면 모델이 받은 권한 지시에 적힌 `sandbox_mode`가 선언과 맞는지(`prompt.sandbox`), 사용자 스킬과 MCP가 실렸는지(`prompt.user_skills`, `prompt.user_mcp`)를 판정합니다. 그런데 `--ignore-user-config`만으로는 `~/.agents/skills`가 계속 실렸습니다. 그래서 `inherit: project`는 `-c skills.include_instructions=false`를 함께 냅니다.
+
 ### 10개 언어
 
 English, 한국어, 日本語, 中文, Español, Français, Русский, हिन्दी, Deutsch, Português를 지원합니다. 오른쪽 위 메뉴에서 고르거나 `?lang=ja`처럼 주소로 지정할 수 있습니다. CLI는 `HARNIST_LANG`(`en` 또는 `ko`)을 따르고, 없으면 시스템 로케일을 따릅니다.
@@ -169,6 +194,8 @@ harnist recall skill:<x> --attach . | --global    보관한 스킬 되살리기
 harnist skills [--name-only S ...] [--reset S ...] 모델이 받는 스킬 전부, 안 쓰는 설명 숨기기
 harnist bench                                     기동 시간·기본 토큰·비용 측정
 harnist audit [--mark]                            현재 전역 상태를 점검 완료로 기록
+harnist profile list | compile <이름> | probe <이름> [--for claude|codex] [--format report|shell|json]
+                                                  자식 프로필 — 인자 컴파일·강제 등급 · 실제 성립 탐침
 ```
 
 ## 호환성
@@ -192,7 +219,7 @@ harnist audit [--mark]                            현재 전역 상태를 점검
 ## 개발
 
 ```bash
-python3 -m unittest tests.test_harnist      # 테스트 58개
+python3 -m unittest tests.test_harnist      # 테스트 69개
 python3 harnist.py demo --dir /tmp/harnist-demo
 ```
 

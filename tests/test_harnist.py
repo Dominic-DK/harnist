@@ -720,5 +720,160 @@ class ListingTest(GlobalFixture):
         self.assertEqual(json.loads((self.home / "settings.json").read_text())["skillOverrides"], {"a": "name-only", "b": "name-only", "c": "name-only"})
 
 
+class ProfileTest(Fixture):
+    def levels(self, c):
+        return {x["prop"]: x["level"] for x in c["props"]}
+
+    def test_builtin_profiles_and_manifest_override(self):
+        self.manifest({"modules": [], "profiles": {"review": {"model": "sonnet"},
+                                                   "web": {"write": "none", "network": True, "inherit": "project", "tools": ["read", "web"],
+                                                           "output": "text", "persist": False, "trace": False}}})
+        profs = harnist.load_profiles(self.man)
+        self.assertEqual(profs["review"]["model"], "sonnet")  # 키 단위로 덮고 나머지는 내장값 유지
+        self.assertEqual(profs["review"]["write"], "none")
+        self.assertIn("delegate", profs)
+        self.assertIn("web", profs)
+
+    def test_invalid_profiles_rejected(self):
+        for bad, msg in [({"write": "all"}, "write"), ({"tools": ["read", "fly"]}, "fly"), ({"color": 1}, "color"),
+                         ({"shell_allow": ["ls"], "tools": ["read"]}, "shell_allow"), ({"network": "no"}, "network")]:
+            self.manifest({"modules": [], "profiles": {"review": bad}})
+            with self.assertRaises(harnist.HarnistError) as e:
+                harnist.load_profiles(self.man)
+            self.assertIn(msg, str(e.exception))
+
+    def test_review_compiles_to_isolated_readonly_children(self):
+        p = harnist.load_profiles(None)["review"]
+        c = harnist.compile_profile(p, "claude", self.tmp)
+        a = c["argv"]
+        self.assertEqual(a[a.index("--tools") + 1], "Read,Glob,Grep")
+        self.assertEqual(a[a.index("--setting-sources") + 1], "project")
+        self.assertIn("--strict-mcp-config", a)
+        self.assertEqual(a[a.index("--permission-prompts") + 1], "none")
+        self.assertIn("--json-schema", a)
+        self.assertEqual(self.levels(c)["write"], "enforced")
+        self.assertEqual(self.levels(c)["inherit"], "approx")  # 내장 플러그인은 남는다
+        x = harnist.compile_profile(p, "codex", self.tmp, schema_path=Path("/s.json"))
+        b = x["argv"]
+        self.assertEqual(b[b.index("-s") + 1], "read-only")
+        self.assertIn('web_search="disabled"', b)  # 호스팅 검색은 샌드박스 밖 — 따로 끈다
+        self.assertIn("--ignore-user-config", b)
+        self.assertEqual(b[b.index("--output-schema") + 1], "/s.json")
+        self.assertEqual(self.levels(x)["tools"], "none")  # 셸을 뺄 수 없다
+        self.assertTrue(any("model" in n for n in x["notes"]))
+
+    def test_delegate_grades_differ_by_vendor(self):
+        p = harnist.load_profiles(None)["delegate"]
+        cl, cx = (self.levels(harnist.compile_profile(p, v, self.tmp)) for v in ("claude", "codex"))
+        self.assertEqual((cl["shell_allow"], cx["shell_allow"]), ("approx", "none"))  # acceptEdits 가 작업 폴더 쓰기 셸을 승인
+        ro = {**p, "write": "none"}
+        self.assertEqual(self.levels(harnist.compile_profile(ro, "claude", self.tmp))["shell_allow"], "enforced")
+        self.assertEqual((cl["network"], cx["network"]), ("approx", "enforced"))
+        self.assertEqual((cl["write"], cx["write"]), ("approx", "enforced"))
+
+    def test_text_output_marked_unprotected_and_user_inherit_unenforced(self):
+        p = {**harnist.load_profiles(None)["review"], "output": "text", "inherit": "user"}
+        c = harnist.compile_profile(p, "claude", self.tmp)
+        self.assertNotIn("--json-schema", c["argv"])
+        self.assertNotIn("--setting-sources", c["argv"])
+        self.assertEqual(self.levels(c)["output"], "none")
+        self.assertEqual(self.levels(c)["inherit"], "none")
+
+    def test_schema_file_resolved_relative_to_manifest(self):
+        (self.repo / "s.json").write_text('{"type":"object","properties":{"ok":{"type":"boolean"}}}')
+        p = {**harnist.load_profiles(None)["review"], "schema": "s.json"}
+        a = harnist.compile_profile(p, "claude", self.repo)["argv"]
+        self.assertIn('"ok"', a[a.index("--json-schema") + 1])
+        with self.assertRaises(harnist.HarnistError):
+            harnist.compile_profile({**p, "schema": "missing.json"}, "claude", self.repo)
+
+    def test_probe_judged_from_trace_and_files_not_self_report(self):
+        lines = [
+            {"type": "system", "subtype": "hook_started"},
+            {"type": "system", "subtype": "init", "tools": ["Read", "Glob", "Grep", "StructuredOutput", "WebFetch"],
+             "mcp_servers": [{"name": "m"}], "permissionMode": "dontAsk",
+             "plugins": [{"name": "cc-plugin-agents-md", "path": "builtin"}, {"name": "korean-guard", "path": "/x"}]},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "HTTP=200"}]}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "network blocked, nothing written"}]}},
+        ]
+        obs = harnist.parse_probe_trace("claude", "\n".join(json.dumps(l) for l in lines))
+        obs.update(inside=[], outside=False)
+        rows = {r["prop"]: r["verdict"] for r in harnist.judge_probe(harnist.load_profiles(None)["review"], "claude", obs)}
+        self.assertEqual(rows["network.shell"], "FAIL")  # 말이 아니라 도구 출력으로 판정
+        self.assertEqual(rows["inherit.plugins+mcp"], "FAIL")
+        self.assertEqual(rows["inherit.hooks"], "FAIL")
+        self.assertEqual(rows["tools"], "FAIL")  # WebFetch 가 남음
+        self.assertEqual(rows["write.inside"], "PASS")
+        self.assertEqual(rows["inherit.builtin_plugins"], "gap")  # compile 이 신고한 한계 — 실패로 세지 않는다
+        den = harnist.parse_probe_trace("claude", json.dumps({"type": "result", "permission_denials": [
+            {"tool_name": "Bash", "tool_input": {"command": "curl -s https://pypi.org"}}]}))
+        self.assertEqual(den["http"], "denied")
+        den.update(inside=["inside_tool.txt"], outside=False)
+        dg = harnist.load_profiles(None)["delegate"]
+        rd = {r["prop"]: r["verdict"] for r in harnist.judge_probe(dg, "claude", den, {"shell_allow": "approx"})}
+        self.assertEqual((rd["write.inside"], rd["network.shell"], rd["shell_allow"]), ("PASS", "PASS", "PASS"))
+        den["inside"] = ["inside_tool.txt", "inside_shell.txt"]  # 허용 목록 밖 echo 가 실행됨
+        for level, verdict in (("approx", "gap"), ("enforced", "FAIL")):
+            rv = {r["prop"]: r["verdict"] for r in harnist.judge_probe(dg, "claude", den, {"shell_allow": level})}
+            self.assertEqual(rv["shell_allow"], verdict)  # 신고한 한계면 gap, 강제한다고 했으면 FAIL
+        cx = harnist.parse_probe_trace("codex", json.dumps({"type": "item.completed", "item": {
+            "type": "command_execution", "aggregated_output": "HTTP=000"}}))
+        cx.update(inside=["inside_shell.txt"], outside=False)
+        rx = {r["prop"]: r["verdict"] for r in harnist.judge_probe(harnist.load_profiles(None)["delegate"], "codex", cx)}
+        self.assertEqual((rx["write.inside"], rx["write.outside"], rx["network.shell"], rx["inherit"]), ("PASS", "PASS", "PASS", "n/a"))
+
+    def test_persist_false_disables_auto_memory_by_env(self):
+        c = harnist.compile_profile(harnist.load_profiles(None)["review"], "claude", self.tmp)
+        self.assertEqual(c["env"], {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"})  # --setting-sources 로는 꺼지지 않는다
+        self.assertEqual(self.levels(c)["persist"], "enforced")
+        on = harnist.compile_profile({**harnist.load_profiles(None)["review"], "persist": True}, "claude", self.tmp)
+        self.assertEqual(on["env"], {})
+        self.assertNotIn("--no-session-persistence", on["argv"])
+
+    def test_requests_judged_from_proxy_log(self):
+        log = self.tmp / "plog"
+        log.mkdir()
+        body = {"model": "m", "system": [{"type": "text", "text": "base # Memory at /x/memory/ see MEMORY.md"}],
+                "messages": [{"role": "user", "content": f"Contents of {harnist.claude_home() / 'CLAUDE.md'}"}],
+                "tools": [{"name": "Read"}, {"name": "Bash"}]}
+        (log / "1.log").write_text("=== REQUEST ===\nPOST /v1/messages\n\n=== REQUEST BODY ===\n" + json.dumps(body, indent=2)
+                                   + "\n\n=== RESPONSE 200 ===\n  x: y\n")
+        (log / "0.log").write_text("=== REQUEST ===\nHEAD /api/hello\n")  # 메시지 요청이 아니면 건너뛴다
+        reqs = [b for f in sorted(log.glob("*.log")) if (b := harnist.read_request_log(f))]
+        self.assertEqual(len(reqs), 1)
+        rows = {r["prop"]: r["verdict"] for r in harnist.judge_requests(harnist.load_profiles(None)["review"], "claude", reqs, self.tmp)}
+        self.assertEqual((rows["prompt.user_memory"], rows["prompt.auto_memory"], rows["prompt.tools"]), ("FAIL", "FAIL", "FAIL"))
+        none = harnist.judge_requests(harnist.load_profiles(None)["review"], "claude", [], self.tmp)
+        self.assertEqual(none[0]["verdict"], "unrun")
+
+    def test_codex_requests_judged_from_responses_api_log(self):
+        sk = self.tmp / "home" / ".agents" / "skills" / "my-skill"
+        sk.mkdir(parents=True)
+        (sk / "SKILL.md").write_text("---\nname: my-skill\n---\n")
+        os.environ["HOME"], old = str(self.tmp / "home"), os.environ.get("HOME")
+        try:
+            dev = ("<permissions instructions>`sandbox_mode` is `read-only`: ...</permissions instructions>"
+                   "<skills_instructions>- my-skill: x (file: r1/my-skill/SKILL.md)</skills_instructions>")
+            body = {"model": "m", "input": [{"role": "developer", "content": [{"type": "input_text", "text": dev}]}]}
+            b = harnist.read_request_log(self._log(body))
+            self.assertIsNotNone(b)  # Responses API 형식도 읽는다
+            rows = {r["prop"]: r["verdict"] for r in harnist.judge_requests(harnist.load_profiles(None)["review"], "codex", [b], self.tmp)}
+            self.assertEqual((rows["prompt.sandbox"], rows["prompt.user_skills"]), ("PASS", "FAIL"))
+            dg = {r["prop"]: r["verdict"] for r in harnist.judge_requests(harnist.load_profiles(None)["delegate"], "codex", [b], self.tmp)}
+            self.assertEqual(dg["prompt.sandbox"], "FAIL")  # 선언은 workspace-write 인데 모델은 read-only 를 들었다
+        finally:
+            os.environ["HOME"] = old
+
+    def test_codex_project_inherit_turns_off_skills_block(self):
+        a = harnist.compile_profile(harnist.load_profiles(None)["review"], "codex", self.tmp)["argv"]
+        self.assertIn("skills.include_instructions=false", a)  # --ignore-user-config 만으로는 ~/.agents/skills 가 실린다
+
+    def _log(self, body):
+        f = self.tmp / "req.log"
+        f.write_text("=== REQUEST ===\nPOST https://x/responses\n\n=== REQUEST BODY ===\n" + json.dumps(body) + "\n\n=== RESPONSE 200 ===\n")
+        return f
+
+
 if __name__ == "__main__":
     unittest.main()

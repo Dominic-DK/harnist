@@ -115,6 +115,31 @@ For a repo without a harness, the right-hand panel offers three steps:
 2. **Design project agents & skills.** Describe the project and harnist runs `claude -p` unattended with the `/harnist:init` procedure. It designs only what no module covers, stores the result as project modules in `.harnist/modules/`, and streams the log into the panel.
 3. **Do it interactively.** Opens a terminal with `claude` in that folder: Terminal on macOS, Windows Terminal or cmd on Windows, and the usual emulators on Linux. If none can be opened, it shows the command to copy.
 
+### Child profiles — launch claude -p and codex exec under one contract
+
+A headless child receives an environment its parent can't see. A `claude -p` child inherits the user's hooks, plugins, MCP servers and permission mode. A `codex exec` child doesn't read CLAUDE.md and starts in a read-only sandbox. An inherited Stop hook can even replace the return value. `profiles:` declares, vendor-neutrally, what the child should receive.
+
+```yaml
+profiles:
+  review:                       # built in — independent review
+    write: none                 # none | workspace
+    network: false
+    inherit: project            # project = cut the user layer | user = inherit as-is
+    tools: [read, search]       # read search edit shell web
+    output: schema              # schema | text
+    schema: .handoff/review.schema.json
+  delegate:                     # built in — delegated execution
+    write: workspace
+    tools: [read, search, edit, shell]
+    shell_allow: [git status, git diff, python3 run_tests.py]
+```
+
+`harnist profile compile review --for codex` turns the declaration into that CLI's flags and grades each property **enforced / approx / unenforced**. The same declaration holds differently per vendor. Codex can't enforce a shell allowlist (exec forces approval never), and Claude can't block network use by allowed shell commands. `harnist profile probe review` launches the child once with the compiled flags. It judges from file existence and tool output in the trace, never from the child's own report. Each verdict is PASS, FAIL (contradicts the declaration), gap (a limit compile already reported), or n/a (no way to observe on that vendor). It exits 1 on any FAIL. A probe runs one real session per vendor, on haiku for Claude and reasoning effort low for Codex unless the profile names a model.
+
+Route the child through a model-API logging proxy (for example `teamclaude server --log-to DIR` plus `ANTHROPIC_BASE_URL`) and pass `--request-log DIR`, and the probe also judges from the requests the model actually received. It checks whether the user CLAUDE.md was loaded, whether auto-memory instructions were injected, and whether the tool schemas match the declaration. None of these show in the trace. Note that Claude's auto memory is not turned off by `--setting-sources project`, so `persist: false` also emits `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. This too was confirmed from the request log.
+
+Codex works the same way. With `--codex-base-url URL` the probe adds `-c openai_base_url=…`, which Codex follows even in ChatGPT sign-in mode. The probe then judges whether the `sandbox_mode` in the permission instructions the model received matches the declaration (`prompt.sandbox`), and whether user skills or MCP servers were loaded (`prompt.user_skills`, `prompt.user_mcp`). `--ignore-user-config` alone still loaded `~/.agents/skills`, so `inherit: project` also emits `-c skills.include_instructions=false`.
+
 ### Ten languages
 
 The dashboard speaks English, 한국어, 日本語, 中文, Español, Français, Русский, हिन्दी, Deutsch and Português. Pick one from the top-right menu, or link with `?lang=ja`. The CLI follows `HARNIST_LANG` (`en` or `ko`) and falls back to your system locale.
@@ -165,6 +190,8 @@ harnist recall skill:<x> --attach . | --global    bring an archived skill back
 harnist skills [--name-only S ...] [--reset S ...] every skill the model receives, and hiding unused descriptions
 harnist bench                                     measure startup time, base tokens and cost
 harnist audit [--mark]                            record the current global state as audited
+harnist profile list | compile <name> | probe <name> [--for claude|codex] [--format report|shell|json]
+                                                  child profiles — compile flags with enforcement grades, probe that they hold
 ```
 
 ## Compatibility
@@ -188,7 +215,7 @@ harnist audit [--mark]                            record the current global stat
 ## Development
 
 ```bash
-python3 -m unittest tests.test_harnist      # 58 tests
+python3 -m unittest tests.test_harnist      # 69 tests
 python3 harnist.py demo --dir /tmp/harnist-demo
 ```
 

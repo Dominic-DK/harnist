@@ -42,7 +42,8 @@ TASKS = {
 LOSS_TASKS = {
     "l1": ("Explore", "Name, exactly as it appears in your skill list, the skill for searching previous Claude Code conversations. Answer with the name only, or NONE if your skill list has no such skill. Do not search files to find it."),
     "l2": ("general-purpose", "According to the user's global instructions you were given (not this repository's), at most how many questions should you ask per response? Answer with the number only, or UNKNOWN if you were not given such an instruction. Do not search files to find it."),
-    "l3": ("general-purpose", "Which MCP server, according to the server instructions you were given, lets you run Apple Shortcuts on the user's iPhone? Answer with the server name only, or NONE if you were given no such instructions."),
+    # 서브에이전트는 MCP 안내를 두 번째 요청부터 받는다 — 도구를 한 번 쓰게 한 뒤에 묻는다
+    "l3": ("general-purpose", "First use the Glob tool once to list *.md files under docs/. Then answer: which MCP server, according to the server instructions you were given, lets you run Apple Shortcuts on the user's iPhone? Answer with the server name only, or NONE if you were given no such instructions."),
     "l4": ("general-purpose", "Name, exactly as it appears in your skill list, the skill for working with .xlsx spreadsheets. Answer with the name only, or NONE if your skill list has no such skill."),
     "l5": ("general-purpose", "Use the Skill tool to load the skill named anthropic-skills:xlsx. Answer LOADED followed by the first heading of what it loaded, or FAILED: followed by the reason."),
 }

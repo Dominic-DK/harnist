@@ -1122,6 +1122,7 @@ def lens_trace(sid: str) -> dict:
     order: list = []
     agents: dict = {}
     costs = sorted((r["t"], r.get("usd", 0)) for r in rows if r.get("kind") == "cost")
+    experiments = [{"id": r.get("id", ""), "variant": r.get("variant", "")} for r in rows if r.get("kind") == "experiment"]
 
     def turn_of(tid: str):
         if tid not in turns:
@@ -1139,6 +1140,7 @@ def lens_trace(sid: str) -> dict:
             if r.get("agentId"):
                 a = agent_of(r["agentId"])
                 a["start"] = a["start"] or r.get("at") or r["t"]
+                a["type"] = a["type"] or r.get("agentType", "")
             else:
                 turn_of(r["turnId"])["start"] = r.get("at") or r["t"]
         elif k == "step":
@@ -1164,7 +1166,7 @@ def lens_trace(sid: str) -> dict:
                 turns.setdefault("_loose", {"tools": []})["tools"].append(tl)
         elif k == "agentDone":
             a = agent_of(r["agentId"])
-            a["type"], a["end"] = r.get("type", ""), r["t"]
+            a["type"], a["end"] = r.get("type") or a["type"], r["t"]
         elif k == "turn":
             t = turn_of(r["turnId"])
             t["end"], t["duration"] = r["t"], r.get("durationMs")
@@ -1221,7 +1223,7 @@ def lens_trace(sid: str) -> dict:
         t["output"] = sum(s["output"] for s in t["steps"])
     return {"id": sid, "cwd": sess.get("cwd", ""), "repo": repo_of(sess["cwd"], {}) if sess.get("cwd") else "?",
             "model": sess.get("model", ""), "interactive": sess.get("interactive"), "turns": out,
-            "cost": costs[-1][1] if costs else None}
+            "cost": costs[-1][1] if costs else None, "experiments": experiments}
 
 
 def _session_metrics(tr: dict) -> dict:
@@ -1259,16 +1261,19 @@ def lens_sessions(days: int) -> list[dict]:
         m = _session_metrics(tr)
         out.append({"id": tr["id"], "repo": tr["repo"], "model": tr["model"], "interactive": tr["interactive"],
                     "turns": m["turns"], "requests": m["requests"], "cost": m["cost"], "hit": m["hit"], "score": m["score"],
-                    "turn_p50": _pct(m["turn_s"], .5), "start": m["start"], "end": m["end"]})
+                    "turn_p50": _pct(m["turn_s"], .5), "start": m["start"], "end": m["end"],
+                    "experiments": tr["experiments"]})
     return out
 
 
 def lens_stats(days: int) -> dict:
     """비용·지연 — 레포별·모델별 p50/p95 턴 시간, 첫 토큰, 생성 속도, 캐시 히트, 점수, 비용."""
-    groups: dict = {"repo": {}, "model": {}, "all": {}}
+    groups: dict = {"repo": {}, "model": {}, "all": {}, "exp": {}}
     for s in lens_sessions(days):
         m = _session_metrics(lens_trace(s["id"]))
-        for axis, key in (("repo", s["repo"]), ("model", s["model"] or "?"), ("all", "all")):
+        keys = [("repo", s["repo"]), ("model", s["model"] or "?"), ("all", "all")]
+        keys += [("exp", f'{x["id"]} · {x["variant"]}') for x in s.get("experiments", [])]  # 실험·변형별 비교
+        for axis, key in keys:
             g = groups[axis].setdefault(key, {"key": key, "sessions": 0, "turns": 0, "cost": 0.0, "turn_s": [], "ttft_s": [],
                                               "tps": [], "hits": [], "scores": []})
             g["sessions"] += 1
@@ -1290,7 +1295,7 @@ def lens_stats(days: int) -> dict:
                          "ttft_p50": _pct(g["ttft_s"], .5), "ttft_p95": _pct(g["ttft_s"], .95), "tps_p50": _pct(g["tps"], .5),
                          "hit": round(sum(g["hits"]) / len(g["hits"]), 3) if g["hits"] else None,
                          "score": round(sum(g["scores"]) / len(g["scores"])) if g["scores"] else None})
-        out[axis] = sorted(rows, key=lambda r: -r["cost"])
+        out[axis] = sorted(rows, key=lambda r: r["key"]) if axis == "exp" else sorted(rows, key=lambda r: -r["cost"])
     return out
 
 
@@ -3069,7 +3074,9 @@ def main(argv=None) -> int:
                 if a.json:
                     print(json.dumps(st, ensure_ascii=False, indent=2))
                     return 0
-                for axis, label in (("model", tr("== 모델")), ("repo", tr("== 레포"))):
+                for axis, label in (("model", tr("== 모델")), ("repo", tr("== 레포")), ("exp", tr("== 실험 (변형별)"))):
+                    if not st[axis]:
+                        continue
                     print(label)
                     for r in st[axis]:
                         f = lambda v, u="": "-" if v is None else f"{v}{u}"
@@ -3263,6 +3270,7 @@ def main(argv=None) -> int:
 EN = {
     "비용·지연 — 레포별·모델별 p50/p95": "cost and latency — p50/p95 per repo and model",
     "== 모델": "== Models",
+    "== 실험 (변형별)": "== Experiments (per variant)",
     "  {key:44} 세션 {s:3} 턴 {t:4}  비용 ${cost:<8} 턴 p50/p95 {p50}/{p95}  첫 토큰 p50 {ttft}  {tps} tok/s  히트 {hit}  점수 {score}":
         "  {key:44} sessions {s:3} turns {t:4}  cost ${cost:<8} turn p50/p95 {p50}/{p95}  first token p50 {ttft}  {tps} tok/s  hit {hit}  score {score}",
     "lens 모드 실측 — 레포별 기본 로드·캐시 히트·훅 주입, 실렸지만 안 쓴 항목":

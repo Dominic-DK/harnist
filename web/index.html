@@ -401,7 +401,7 @@ table.lx-tb { width: 100%; border-collapse: collapse; font-size: 12.5px; font-va
     <div class="kpis lx-kpis" id="kpi-lens"></div>
     <div class="card full lx-stats">
       <div class="card-h"><h2 data-i="lx_stats_title"></h2><span class="sub" data-i="lx_stats_sub"></span><span class="spacer"></span>
-        <div class="seg sm" id="lx-axis"><a data-ax="model" data-i="lx_by_model"></a><a data-ax="repo" data-i="lx_by_repo"></a></div></div>
+        <div class="seg sm" id="lx-axis"><a data-ax="model" data-i="lx_by_model"></a><a data-ax="repo" data-i="lx_by_repo"></a><a data-ax="exp" data-i="lx_by_exp" id="lx-ax-exp"></a></div></div>
       <div class="card-b"><div class="au-wrap"><table class="lx-tb" id="lx-stats"></table></div></div>
     </div>
     <div class="lx-grid">
@@ -901,9 +901,11 @@ function renderLens() {
     : "";
   $("#lx-axis").querySelectorAll("a").forEach((a) => a.classList.toggle("on", a.dataset.ax === lxAxis));
   $("#lx-order").querySelectorAll("a").forEach((a) => a.classList.toggle("on", a.dataset.o === lxOrder));
+  $("#lx-ax-exp").hidden = !(LX.stats.exp || []).length;
+  if (lxAxis === "exp" && !(LX.stats.exp || []).length) lxAxis = "model";
   const rows = LX.stats[lxAxis] || [];
   $("#lx-stats").innerHTML = rows.length
-    ? `<tr><th>${esc(t(lxAxis === "model" ? "lx_c_model" : "lx_c_repo"))}</th><th>${esc(t("lx_c_sessions"))}</th><th>${esc(t("lx_c_turns"))}</th><th>${esc(t("lx_c_cost"))}</th><th>${esc(t("lx_c_cpt"))}</th><th>${esc(t("lx_c_turn"))}</th><th>${esc(t("lx_c_ttft"))}</th><th>${esc(t("lx_c_tps"))}</th><th>${esc(t("lx_c_hit"))}</th><th>${esc(t("lx_c_score"))}</th></tr>` +
+    ? `<tr><th>${esc(t(lxAxis === "model" ? "lx_c_model" : lxAxis === "exp" ? "lx_c_exp" : "lx_c_repo"))}</th><th>${esc(t("lx_c_sessions"))}</th><th>${esc(t("lx_c_turns"))}</th><th>${esc(t("lx_c_cost"))}</th><th>${esc(t("lx_c_cpt"))}</th><th>${esc(t("lx_c_turn"))}</th><th>${esc(t("lx_c_ttft"))}</th><th>${esc(t("lx_c_tps"))}</th><th>${esc(t("lx_c_hit"))}</th><th>${esc(t("lx_c_score"))}</th></tr>` +
       rows.map((r) => `<tr><td title="${esc(r.key)}">${esc(lxAxis === "repo" ? r.key : r.key)}</td><td>${fmt(r.sessions)}</td><td>${fmt(r.turns)}</td><td>${money(r.cost)}</td><td class="dim">${money(r.cost_per_turn)}</td>
         <td>${secs(r.turn_p50)} <span class="dim">/ ${secs(r.turn_p95)}</span></td><td>${secs(r.ttft_p50)} <span class="dim">/ ${secs(r.ttft_p95)}</span></td>
         <td>${r.tps_p50 == null ? "—" : fmt(r.tps_p50) + " <span class=dim>tok/s</span>"}</td><td>${pctf(r.hit)}</td><td>${scoreTag(r.score)}</td></tr>`).join("")

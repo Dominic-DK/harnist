@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { pickLang, t } from '../hooks/i18n'
-import { bar, breakCause, clock, compactEta, digest, fit, gauge, scoreTurn, hitRate, k, learnTtl, limitLabel, mcpServer, rebuild, rollup, spark, speed, usedKey } from '../hooks/stats'
+import { assign, bar, breakCause, clock, compactEta, digest, fit, gauge, parseExperiments, scoreTurn, sectionOverride, hitRate, k, learnTtl, limitLabel, mcpServer, rebuild, rollup, spark, speed, usedKey } from '../hooks/stats'
 import type { LoadedItem, Step } from '../types'
 
 const ITEMS: LoadedItem[] = [
@@ -160,5 +160,25 @@ describe('lens 점수', () => {
     expect(scoreTurn(zero)).toEqual({ score: 100, reasons: [] })
     expect(scoreTurn({ ...zero, failed: 2, repeat: 1 })).toEqual({ score: 65, reasons: ['failed', 'repeat'] })
     expect(scoreTurn({ ...zero, aborted: true, error: true, failed: 9, denied: 5, asked: 9, repeat: 1, compacted: 1 }).score).toBe(0)
+  })
+})
+
+describe('lens 실험', () => {
+  test('세션마다 A/B 를 고정 배정하고 섹션을 바꾼다', async () => {
+    expect(assign('s1', 'x')).toBe(assign('s1', 'x'))
+    const arms = Array.from({ length: 200 }, (_, i) => assign(`s${i}`, 'x'))
+    const b = arms.filter(a => a === 'B').length
+    expect(b > 70 && b < 130).toBe(true)
+    const list = parseExperiments(JSON.stringify({ experiments: [
+      { id: 'short-tone', op: 'replace', section: 'tone', text: 'Be brief.' },
+      { id: 'no-env', op: 'drop', section: 'env_info_simple' },
+      { id: 'off', op: 'append', text: 'x', active: false },
+      { id: 'bad', op: 'nope' },
+    ] }))
+    expect(list.map(x => x.id)).toEqual(['short-tone', 'no-env'])
+    expect(sectionOverride(list, 'tone', 'original')).toBe('Be brief.')
+    expect(sectionOverride(list, 'env_info_simple', 'env')).toBeNull()
+    expect(sectionOverride(list, 'memory', 'm')).toBe('m')
+    expect(parseExperiments('not json')).toEqual([])
   })
 })

@@ -131,6 +131,14 @@ The **Trace** tab of `harnist view` turns the records into:
 - **Cost & latency** per model or per repo: turn time p50/p95 (subagents included), time to first token p50/p95, output speed, cache hit, score, and cost per turn.
 - **A waterfall per turn**: requests colored by cache hit with the wait for the first token shaded, tool calls with failures in red, and each subagent on its own lane.
 
+**Prompt A/B experiments.** Put experiments in `~/.claude/lens/experiments.json` — replace or drop a system-prompt section by name, or append one:
+
+```json
+{ "experiments": [ { "id": "short-tone", "op": "replace", "section": "tone", "text": "Be brief." } ] }
+```
+
+Each session is assigned A (original) or B (variant) from a hash of its id, so a session never changes arms and its cache stays intact. `/lens exp` shows the arms of the current session, and the Trace tab's *By experiment* view compares score, cache hit, turn time and cost per variant.
+
 From the CLI, `harnist lens` lists items that were loaded but never used (ranked by unused sessions × tokens) and `harnist lens --stats` prints the cost and latency table. `harnist usage --json` gains a measured `lens` field for each global item.
 
 ### New projects — connect what you will actually use

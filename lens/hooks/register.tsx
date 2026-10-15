@@ -19,15 +19,18 @@ import {
   limitLabel,
   mcpServer,
   norm,
+  assign,
+  parseExperiments,
   rebuild,
   rollup,
+  sectionOverride,
   scoreTurn,
   spark,
   speed,
   ttlMs,
   usedKey,
 } from './stats'
-import type { SessionDigest } from './stats'
+import type { Experiment, SessionDigest } from './stats'
 
 // 세션에 실린 것(로드)과 쓰인 것(호출), 요청별 캐시를 구조와 크기만 기록한다. 본문 텍스트는 남기지 않는다.
 const PANE = 'lens'
@@ -61,6 +64,20 @@ let currentTurnId = ''
 let turnSignals = { asked: 0, denied: 0, failed: 0, compacted: 0, failedTools: {} as Record<string, number> }
 // 리로드·재개 직후 첫 요청은 과거 주입 메시지를 다시 렌더링한다. 그동안 들어오는 것은 재생분으로 표시한다
 let replaying = false
+// 이 세션이 B(변형)를 받은 실험, 그리고 전체 배정
+let expB: Experiment[] = []
+let expAssigned: { id: string; variant: 'A' | 'B'; op: string; section: string }[] = []
+const typeOf: Record<string, string> = {}
+
+async function loadExperiments($: EngineInterface) {
+  const path = `${await lensDir($)}/experiments.json`
+  if (!(await $.fs.exists(path))) return
+  const sid = await $.session.id()
+  const list = parseExperiments(await $.fs.read(path))
+  expAssigned = list.map(x => ({ id: x.id, variant: assign(sid, x.id), op: x.op, section: x.section ?? '' }))
+  expB = list.filter(x => assign(sid, x.id) === 'B')
+  for (const a of expAssigned) await rec($, 'experiment', a)
+}
 
 const isMain = (s: Step) => s.agentId === ''
 
@@ -226,6 +243,11 @@ export const register: Register = on => {
     } catch (err) {
       $.ui.log(`lens: ${String(err)}`, { to: 'debug' })
     }
+    try {
+      await loadExperiments($)
+    } catch (err) {
+      $.ui.log(`lens: experiments ${String(err)}`, { to: 'debug' })
+    }
     const savedLang = await $.store.get('lang')
     const envLang = await $.env.get('LANG')
     await update($, lang, () => pickLang(savedLang, envLang))
@@ -250,8 +272,8 @@ export const register: Register = on => {
     })
     await $.command.register({
       name: 'lens',
-      description: 'Open the lens pane · band (toggle the line under the prompt) · lang ko|en · review (analyze)',
-      argumentHint: '[band | lang ko|en | review]',
+      description: 'Open the lens pane · band (toggle the line under the prompt) · lang ko|en · review (analyze) · exp (A/B experiments)',
+      argumentHint: '[band | lang ko|en | review | exp]',
       immediate: true,
     })
     return next(e)
@@ -281,6 +303,10 @@ export const register: Register = on => {
       void askReview($)
       return {}
     }
+    if (arg === 'exp') {
+      if (!expAssigned.length) return { text: `lens: no active experiments (${await lensDir($)}/experiments.json)` }
+      return { text: 'lens experiments (this session)\n' + expAssigned.map(a => `  ${a.id.padEnd(24)} ${a.variant}  ${a.op} ${a.section}`).join('\n') }
+    }
     if (arg !== '') return { text: t(l, 'usage') }
     await openPane($)
     return {}
@@ -288,8 +314,17 @@ export const register: Register = on => {
 
   // ---- 관찰 ----
 
-  on('prompt.compose', async ($, e, next) => {
+  // 실험: B 를 받은 세션만 섹션을 바꾸거나 빼고, append 는 끝에 섹션을 더한다
+  on('prompt.section', async ($, e, next) => {
     const r = await next(e)
+    if (!expB.length) return r
+    return { text: sectionOverride(expB, e.name, r.text) }
+  })
+
+  on('prompt.compose', async ($, e, next) => {
+    const base = await next(e)
+    const extra = expB.filter(x => x.op === 'append' && x.text).map(x => ({ id: `lens:exp-${x.id}`, text: x.text ?? '', scope: 'session' as const }))
+    const r = extra.length ? { sections: [...base.sections, ...extra] } : base
     await rec($, 'compose', { model: e.model, sections: r.sections.map(s => ({ id: s.id, scope: s.scope, chars: s.text.length })) })
     return r
   })
@@ -373,7 +408,8 @@ export const register: Register = on => {
       turnSignals = { asked: 0, denied: 0, failed: 0, compacted: 0, failedTools: {} }
       await update($, live, () => ({ turnStartedAt: now, tool: '', toolStartedAt: 0, agents: 0 }))
     }
-    await rec($, 'turnStart', { turnId: e.turnId, agentId: e.agentId ?? '', at: now })
+    if (e.agentId && !typeOf[e.agentId]) typeOf[e.agentId] = (await $.agent.list()).find(a => a.id === e.agentId)?.type ?? ''
+    await rec($, 'turnStart', { turnId: e.turnId, agentId: e.agentId ?? '', agentType: e.agentId ? typeOf[e.agentId] : '', at: now })
     return next(e)
   })
 
@@ -435,7 +471,7 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId) {
       const info = (await $.agent.list()).find(a => a.id === e.agentId)
-      await rec($, 'agentDone', { agentId: e.agentId, type: info?.type ?? '', durationMs: e.durationMs, usage: e.usage })
+      await rec($, 'agentDone', { agentId: e.agentId, type: info?.type || typeOf[e.agentId] || '', durationMs: e.durationMs, usage: e.usage })
     }
     if (!e.agentId) {
       const sc = scoreTurn({

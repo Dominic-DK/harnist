@@ -369,3 +369,37 @@ export const scoreTurn = (s: Signals) => {
   const hit = minus.filter(([, n]) => n > 0)
   return { score: Math.max(0, 100 - hit.reduce((a, [, n]) => a + n, 0)), reasons: hit.map(([k]) => k) }
 }
+
+// ---- 프롬프트 A/B 실험 ----
+// ~/.claude/lens/experiments.json: { "experiments": [{ "id", "active", "op": "replace" | "drop" | "append", "section", "text" }] }
+// A = 원본, B = 변형. 같은 세션은 늘 같은 쪽(세션 ID 해시)이라 세션 중 캐시가 깨지지 않는다.
+
+export type Experiment = { id: string; active?: boolean; op: 'replace' | 'drop' | 'append'; section?: string; text?: string }
+
+export const assign = (sessionId: string, expId: string): 'A' | 'B' => {
+  let h = 2166136261
+  for (const ch of `${sessionId}:${expId}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619)
+  return (h >>> 0) % 2 === 0 ? 'A' : 'B'
+}
+
+export const parseExperiments = (raw: string): Experiment[] => {
+  try {
+    const list = (JSON.parse(raw) as { experiments?: unknown }).experiments
+    return Array.isArray(list)
+      ? (list as Experiment[]).filter(x => x && typeof x.id === 'string' && ['replace', 'drop', 'append'].includes(x.op) && x.active !== false)
+      : []
+  } catch {
+    return []
+  }
+}
+
+// 이 세션에서 B 를 받은 실험만 섹션에 적용한다
+export const sectionOverride = (bs: Experiment[], name: string, text: string | null) => {
+  let out = text
+  for (const x of bs) {
+    if (x.section !== name) continue
+    if (x.op === 'drop') out = null
+    else if (x.op === 'replace') out = x.text ?? out
+  }
+  return out
+}

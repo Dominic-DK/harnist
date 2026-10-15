@@ -484,6 +484,17 @@ class LensTraceTest(GlobalFixture):
         self.assertEqual({r["key"] for r in st["model"]}, {"opus", "haiku"})
         self.assertEqual(st["model"][0]["ttft_p50"], 0.5)
 
+    def test_stats_split_by_experiment_variant(self):
+        self.write_trace("s1")
+        self.write_trace("s2")
+        for sid, arm in (("s1", "A"), ("s2", "B")):
+            with (self.home / f"lens/{sid}.jsonl").open("a") as f:
+                f.write(json.dumps({"v": 1, "t": 1, "kind": "experiment", "id": "short-tone", "variant": arm}) + "\n")
+        st = harnist.lens_stats(36500)
+        self.assertEqual([r["key"] for r in st["exp"]], ["short-tone · A", "short-tone · B"])
+        self.assertEqual(st["exp"][0]["sessions"], 1)
+        self.assertEqual(harnist.lens_trace("s1")["experiments"], [{"id": "short-tone", "variant": "A"}])
+
     def test_trace_rejects_path_tricks(self):
         for bad in ("../x", "a/b", "", "s1.jsonl"):
             with self.assertRaises(harnist.HarnistError):

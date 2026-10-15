@@ -162,6 +162,7 @@ def fake_lens(home: Path, ws: Path) -> None:
              ("shop-web", "claude-haiku-5-5", False, 2), ("mobile-app", "claude-opus-5-5[1m]", True, 5)]
     for si, (repo, model, interactive, n_turns) in enumerate(plans):
         rows = [{"v": 1, "t": base, "kind": "session", "cwd": str(ws / repo), "model": model, "interactive": interactive}]
+        rows.append({"v": 1, "t": base, "kind": "experiment", "id": "short-tone", "variant": "AB"[si % 2], "op": "replace", "section": "tone"})
         now, cost = base + si * 40 * 60 * 1000, 0.0
         for ti in range(n_turns):
             tid, start = f"t{si}-{ti}", now

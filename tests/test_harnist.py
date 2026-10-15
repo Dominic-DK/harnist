@@ -517,6 +517,23 @@ class LensTraceTest(GlobalFixture):
         self.assertEqual(b["start"], 1_000_000 + 61000 - 2000)  # 시작 기록이 없으면 끝 − 소요 시간
         self.assertEqual([x["tool"] for x in b["tools"]], ["Read"])  # 턴 ID 없는 옛 도구는 시각으로 붙인다
 
+    def test_trace_shows_subagent_load_and_denied_spawns(self):
+        self.write_trace("s1")
+        aid = harnist.lens_trace("s1")["turns"][0]["agents"][0]["id"]
+        with (self.home / "lens/s1.jsonl").open("a") as f:
+            for r in [{"kind": "agent", "type": "Explore", "model": "claude-haiku-5-5", "agentId": aid},
+                      {"kind": "agent", "type": "Plan", "deny": "harnist runtime: Plan 금지"},
+                      {"kind": "attachment", "type": "skill_listing", "chars": 1129, "agentId": aid},
+                      {"kind": "attachment", "type": "instructions", "chars": 832, "agentId": aid},
+                      {"kind": "attachment", "type": "date", "chars": 27, "agentId": aid},
+                      {"kind": "attachment", "type": "skill_listing", "chars": 9999, "agentId": aid, "replay": True}]:
+                f.write(json.dumps({"v": 1, "t": 1_000_000 + 2000, **r}) + "\n")
+        a = harnist.lens_trace("s1")["turns"][0]
+        ag = a["agents"][0]
+        self.assertEqual(ag["model"], "claude-haiku-5-5")
+        self.assertEqual(ag["load"], {"skills": 1129, "memory": 832, "other": 27})  # 재생분은 세지 않는다
+        self.assertEqual(a["denied"], [{"type": "Plan", "reason": "harnist runtime: Plan 금지"}])
+
     def test_sessions_and_latency_stats(self):
         self.write_trace("s1")
         self.write_trace("s2", model="haiku")

@@ -141,6 +141,8 @@ Each session is assigned A (original) or B (variant) from a hash of its id, so a
 
 From the CLI, `harnist lens` lists items that were loaded but never used (ranked by unused sessions × tokens) and `harnist lens --stats` prints the cost and latency table. `harnist usage --json` gains a measured `lens` field for each global item.
 
+Each subagent bar shows what was loaded into it: skill list (S), CLAUDE.md (C), MCP notes (M) and tool list (T), in characters. Its tooltip names the model. That is where the runtime mod's per-role trimming shows up, and a spawn a plugin refused appears on the turn header. Open a trace directly with `?trace=<session id>`.
+
 ### New projects — connect what you will actually use
 
 ![New project](docs/img/new-project-en.png)

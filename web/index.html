@@ -322,7 +322,7 @@ table.lx-tb { width: 100%; border-collapse: collapse; font-size: 12.5px; font-va
 .bar .tx { position: relative; }
 .bar.tool { background: var(--accent-2); }
 .bar.tool.err { background: var(--bad); }
-.bar.ag { background: color-mix(in srgb, var(--accent-2) 22%, transparent); border: 1px dashed var(--accent-2); }
+.bar.ag { background: color-mix(in srgb, var(--accent-2) 22%, transparent); border: 1px dashed var(--accent-2); color: var(--accent-2); font-weight: 600; line-height: 14px; }
 .ax { position: relative; height: 16px; margin-left: 100px; font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .ax span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .ax span:first-child { transform: none; } .ax span:last-child { transform: translateX(-100%); }
@@ -879,6 +879,8 @@ const repoName = (r) => (r || "?").split("/").filter(Boolean).pop() || r;
 
 async function loadLens() {
   try { LX = await (await fetch("/api/lens?days=30", { cache: "no-store" })).json(); } catch (e) { return; }
+  const want = new URLSearchParams(location.search).get("trace");  // ?trace=<세션 ID> 로 바로 연다
+  if (!lxSel && want) lxSel = want;
   if (!lxSel && LX.sessions.length) lxSel = LX.sessions[0].id;
   renderLens();
   if (lxSel) loadTrace(lxSel);
@@ -941,7 +943,7 @@ function lane(label, items, t0, span, kind, cls = "") {
       const tip = `${t("lx_req_lane")} #${it.index + 1} · ${secs((it.end - it.start) / 1000)} · ${t("lx_ttft")} ${secs(it.ttft / 1000)} · ${t("lx_c_hit")} ${pctf(it.hit)} · in ${fmt(it.input + it.read + it.write)} / out ${fmt(it.output)}${it.brk ? " · " + it.brk : ""}`;
       return `<i class="bar" style="left:${left}%;width:${width}%;top:${top}px;background:${hitColor(it.hit)}" title="${esc(tip)}"><span class="w" style="width:${w}%"></span><span class="tx">${it.output ? fmt(it.output) : ""}</span></i>`;
     }
-    if (kind === "agent") return `<i class="bar ag" style="left:${left}%;width:${width}%;top:${top}px" title="${esc(it.label)}"></i>`;
+    if (kind === "agent") return `<i class="bar ag" style="left:${left}%;width:${width}%;top:${top}px" title="${esc(it.label)}"><span class="tx">${esc(it.short || "")}</span></i>`;
     const tip = `${it.tool} · ${secs((it.end - it.start) / 1000)}${it.error ? " · " + t("lx_err") : ""}`;
     return `<i class="bar tool ${it.error ? "err" : ""}" style="left:${left}%;width:${width}%;top:${top}px" title="${esc(tip)}"><span class="tx">${esc(it.tool.replace(/^mcp__/, ""))}</span></i>`;
   }).join("");
@@ -959,14 +961,19 @@ function renderTrace() {
     let lanes = lane(t("lx_req_lane"), x.steps, t0, span, "req") + (x.tools.length ? lane(t("lx_tool_lane"), x.tools, t0, span, "tool") : "");
     for (const a of x.agents) {
       const label = a.type || t("lx_agent_lane");
-      lanes += lane(label, [{ start: a.start, end: a.end, label: `${label} · ${secs((a.end - a.start) / 1000)}` }], t0, span, "agent", "ag");
+      // 서브에이전트가 받은 주입 — runtime 이 역할별로 깎으면 여기서 보인다 (S 스킬 · C CLAUDE.md · M MCP · T 도구 목록)
+      const ld = a.load || {}, parts = [["skills", "S"], ["memory", "C"], ["mcp", "M"], ["tools", "T"]];
+      const short = Object.keys(ld).length ? parts.map(([k, l]) => `${l} ${fmt(ld[k] || 0)}`).join(" · ") : "";
+      const detail = Object.keys(ld).length ? " · " + t("lx_load") + ": " + [...parts.map(([k]) => k), "other"].map((k) => `${t("lx_load_" + k)} ${fmt(ld[k] || 0)}`).join(", ") : "";
+      const model = a.model ? " · " + a.model.replace(/^claude-/, "") : "";
+      lanes += lane(label, [{ start: a.start, end: a.end, short, label: `${label}${model} · ${secs((a.end - a.start) / 1000)}${detail}` }], t0, span, "agent", "ag");
       if (a.steps.length) lanes += lane("↳ " + t("lx_req_lane"), a.steps, t0, span, "req", "ag");
       if (a.tools.length) lanes += lane("↳ " + t("lx_tool_lane"), a.tools, t0, span, "tool", "ag");
     }
     const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => `<span style="left:${f * 100}%">${secs((span * f) / 1000)}</span>`).join("");
     return `<div class="tn"><div class="tn-h"><span class="t">${esc(t("lx_turn", { n: x.n }))}</span><span>${esc(clockAt(x.start))}</span>
       <span class="dur">${secs(x.span / 1000)}</span><span>${esc(t("lx_requests", { n: x.requests }))}</span><span>${money(x.cost)}</span>
-      <span>${esc(t("lx_c_hit"))} ${pctf(x.hit)}</span>${scoreTag(x.score)}${reasons}</div>
+      <span>${esc(t("lx_c_hit"))} ${pctf(x.hit)}</span>${scoreTag(x.score)}${reasons}${(x.denied || []).map((d) => `<span class="rs" title="${esc(d.reason)}">${esc(t("lx_denied"))} ${esc(d.type)}</span>`).join("")}</div>
       <div class="wf">${lanes}<div class="ax">${ticks}</div></div></div>`;
   }).join("");
   const more = ordered.length > shown.length ? `<button class="btn lx-more" id="lx-more">${esc(t("lx_more", { n: ordered.length - shown.length }))}</button>` : "";

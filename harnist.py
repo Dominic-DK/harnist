@@ -1220,7 +1220,12 @@ def lens_trace(sid: str) -> dict:
         return turns[tid]
 
     def agent_of(aid: str):
-        return agents.setdefault(aid, {"id": aid, "type": "", "start": None, "end": None, "steps": [], "tools": []})
+        return agents.setdefault(aid, {"id": aid, "type": "", "model": "", "start": None, "end": None, "steps": [], "tools": [],
+                                       "load": {}})
+
+    denied: list = []  # 플러그인(runtime 등)이 막은 생성 — 시각으로 턴에 붙인다
+    load_kind = {"skill_listing": "skills", "instructions": "memory", "mcp_instructions_delta": "mcp",
+                 "deferred_tools_delta": "tools"}
 
     for r in rows:
         k = r.get("kind")
@@ -1252,6 +1257,17 @@ def lens_trace(sid: str) -> dict:
             else:  # 0.4 이전 기록: 시각으로 턴을 찾는다
                 tl["_loose"] = True
                 turns.setdefault("_loose", {"tools": []})["tools"].append(tl)
+        elif k == "agent":
+            if r.get("deny"):
+                denied.append({"type": r.get("type", ""), "reason": r["deny"], "at": r["t"]})
+            elif r.get("agentId"):
+                a = agent_of(r["agentId"])
+                a["type"] = a["type"] or r.get("type", "")
+                a["model"] = r.get("model") or a["model"]
+        elif k == "attachment" and r.get("agentId") and not r.get("replay"):
+            ld = agent_of(r["agentId"])["load"]
+            key = load_kind.get(r.get("type", ""), "other")
+            ld[key] = ld.get(key, 0) + (r.get("chars") or 0)
         elif k == "agentDone":
             a = agent_of(r["agentId"])
             a["type"], a["end"] = r.get("type") or a["type"], r["t"]
@@ -1281,6 +1297,12 @@ def lens_trace(sid: str) -> dict:
         host = next((t for t in out if t["start"] <= x["start"] <= t["end"]), None)
         if host:
             host["tools"].append({k: v for k, v in x.items() if k != "_loose"})
+    for t in out:
+        t["denied"] = []
+    for d in denied:
+        host = next((t for t in reversed(out) if t["start"] <= d["at"]), out[0] if out else None)
+        if host:
+            host["denied"].append({"type": d["type"], "reason": d["reason"]})
     for a in agents.values():
         if a["start"] is None:
             ss = [s["start"] for s in a["steps"]] + [x["start"] for x in a["tools"]]

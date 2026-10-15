@@ -355,9 +355,11 @@ export const register: Register = on => {
     return next(e)
   })
 
+  const deniedSpawns = new Set<string>()
   on('agent.spawn', async ($, e, next) => {
     await markUsed($, `agent:${e.subagentType}`)
     const r = await next(e)
+    if (r.deny) deniedSpawns.add(e.tool_use_id)
     // agentId 로 이 서브에이전트의 주입·요청을 종류와 잇는다. 플러그인이 막았으면 사유를 남긴다
     await rec($, 'agent', {
       type: e.subagentType, model: r.model ?? e.model, background: e.background, fork: e.fork,
@@ -407,6 +409,12 @@ export const register: Register = on => {
     })
     const id = (e as { tool_use_id?: string }).tool_use_id ?? ''
     await rec($, 'tool', { tool: e.tool, id, start: started, ms, agentId, turnId: agentId ? '' : currentTurnId, isError })
+    // lens 보다 바깥의 플러그인(runtime 등)이 생성을 막으면 agent.spawn 훅까지 오지 않는다 — Agent 결과로 남긴다
+    const text = (r as { text?: string }).text ?? ''
+    if (e.tool === 'Agent' && isError && text.includes('spawn denied') && !deniedSpawns.has(id)) {
+      const type = (e as { subagent_type?: string }).subagent_type ?? ''
+      await rec($, 'agent', { type, deny: text, via: 'tool' })
+    }
     return r
   }).catch(($, e, next) => next(e))
 

@@ -38,14 +38,29 @@ TASKS = {
     "s7": ("Plan", "Reply OK."),
 }
 
-SCHEMA = {"type": "object", "additionalProperties": False, "required": list(TASKS),
-          "properties": {k: {"type": "string"} for k in TASKS}}
+# 손해 묶음 — B 설정이 깎는 것(스킬 목록·전역 CLAUDE.md·MCP 안내)을 일부러 필요하게 만든다
+LOSS_TASKS = {
+    "l1": ("Explore", "Name, exactly as it appears in your skill list, the skill for searching previous Claude Code conversations. Answer with the name only, or NONE if your skill list has no such skill. Do not search files to find it."),
+    "l2": ("general-purpose", "According to the user's global instructions you were given (not this repository's), at most how many questions should you ask per response? Answer with the number only, or UNKNOWN if you were not given such an instruction. Do not search files to find it."),
+    "l3": ("general-purpose", "Which MCP server, according to the server instructions you were given, lets you run Apple Shortcuts on the user's iPhone? Answer with the server name only, or NONE if you were given no such instructions."),
+    "l4": ("general-purpose", "Name, exactly as it appears in your skill list, the skill for working with .xlsx spreadsheets. Answer with the name only, or NONE if your skill list has no such skill."),
+    "l5": ("general-purpose", "Use the Skill tool to load the skill named anthropic-skills:xlsx. Answer LOADED followed by the first heading of what it loaded, or FAILED: followed by the reason."),
+}
 
-PROMPT = ("This is an automated evaluation. Spawn the subagents below one at a time, in order, waiting for each to finish. "
-          "Use exactly the subagent type given and pass each prompt verbatim. Do not do the tasks yourself. "
-          "If a spawn is refused, put the refusal message as that item's answer. Then return each subagent's answer, verbatim, "
-          "in the structured output under its id.\n\n"
-          + "\n".join(f"{k} ({t}): {p}" for k, (t, p) in TASKS.items()))
+SUITES = {"base": TASKS, "loss": LOSS_TASKS}
+
+
+def schema(tasks):
+    return {"type": "object", "additionalProperties": False, "required": list(tasks),
+            "properties": {k: {"type": "string"} for k in tasks}}
+
+
+def prompt(tasks):
+    return ("This is an automated evaluation. Spawn the subagents below one at a time, in order, waiting for each to finish. "
+            "Use exactly the subagent type given and pass each prompt verbatim. Do not do the tasks yourself. "
+            "If a spawn is refused, put the refusal message as that item's answer. Then return each subagent's answer, verbatim, "
+            "in the structured output under its id.\n\n"
+            + "\n".join(f"{k} ({t}): {p}" for k, (t, p) in tasks.items()))
 
 DROP_ENV = ("CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 
@@ -56,15 +71,15 @@ def truth(repo: Path) -> dict:
             "s3": "python3 -m unittest tests.test_harnist"}
 
 
-def run_once(cond: str, repo: Path, model: str, cfg: Path, out: Path) -> dict:
+def run_once(cond: str, repo: Path, model: str, cfg: Path, out: Path, tasks: dict) -> dict:
     argv = ["claude", "-p", "--model", model, "--output-format", "stream-json", "--verbose",
-            "--json-schema", json.dumps(SCHEMA), "--allowedTools", "Agent,Read,Glob,Grep,Bash(ls:*)"]
+            "--json-schema", json.dumps(schema(tasks)), "--allowedTools", "Agent,Read,Glob,Grep,Bash(ls:*),Skill"]
     env = {k: v for k, v in os.environ.items() if k not in DROP_ENV and not k.startswith("CLAUDE_CODE_MESSAGING")}
     if cond == "B":
         argv += ["--plugin-dir", str(RUNTIME)]
         env["HARNIST_RUNTIME_CONFIG"] = str(cfg)
     t0 = time.time()
-    r = subprocess.run(argv, cwd=repo, input=PROMPT, capture_output=True, text=True, env=env, timeout=900)
+    r = subprocess.run(argv, cwd=repo, input=prompt(tasks), capture_output=True, text=True, env=env, timeout=900)
     wall = time.time() - t0
     out.write_text(r.stdout)
     res = result_line(r.stdout)
@@ -103,16 +118,28 @@ def lens_view(sid: str) -> dict:
             "lens_found": bool(rows)}
 
 
-def grade(run: dict, lv: dict, gold: dict) -> dict:
-    a = {k: (run["answers"].get(k) or "").strip() for k in TASKS}
-    trace = Path(run["trace"]).read_text()
-    g = {
-        "s1": gold["s1"] in a["s1"].replace(" ", ""),
-        "s2": a["s2"].strip(".") == gold["s2"],
-        "s3": gold["s3"] in a["s3"],
-        "s4": gold["s3"] in a["s4"],
-        "s5": "search-conversations" in a["s5"],
+def checks(gold: dict) -> dict:
+    """과제별 정답 판정 — 답 문자열만 본다 (자기보고 '맞다'가 아니라 내용이 정답과 맞는지)"""
+    return {
+        "s1": lambda x: gold["s1"] in x.replace(" ", ""),
+        "s2": lambda x: x.strip(".") == gold["s2"],
+        "s3": lambda x: gold["s3"] in x,
+        "s4": lambda x: gold["s3"] in x,
+        "s5": lambda x: "search-conversations" in x,
+        "l1": lambda x: "search-conversations" in x,
+        "l2": lambda x: x.strip(".") == "1",
+        "l3": lambda x: "askew" in x.lower(),
+        "l4": lambda x: "xlsx" in x.lower() and "NONE" not in x,
+        "l5": lambda x: x.upper().startswith("LOADED"),
     }
+
+
+def grade(run: dict, lv: dict, gold: dict) -> dict:
+    tasks = run["tasks"]
+    a = {k: (run["answers"].get(k) or "").strip() for k in tasks}
+    trace = Path(run["trace"]).read_text()
+    ck = checks(gold)
+    g = {k: ck[k](a[k]) for k in tasks}
     bash_denied = "harnist runtime: 이 역할은 Bash" in trace
     plan_denied = any(t == "Plan" and "harnist runtime" in d for t, d in lv["denied"]) or "harnist runtime: Plan" in trace
     ex = [x["att"] for x in lv["by_type"].get("Explore", [])]
@@ -131,6 +158,7 @@ def main():
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--repo", default=str(HARNIST))
+    ap.add_argument("--suite", choices=list(SUITES), default="base", help="base: 일상 과제·강제 / loss: 깎인 맥락이 필요한 과제")
     ap.add_argument("--parallel", action="store_true", help="모든 실행을 한꺼번에 띄운다 — 두 조건이 같은 시간대·캐시 상황을 겪는다")
     a = ap.parse_args()
     repo = Path(a.repo).resolve()
@@ -143,11 +171,12 @@ def main():
 
     def one(job):
         cond, n = job
-        r = run_once(cond, repo, a.model, cfg, store / f"{cond}{n}.jsonl")
+        r = run_once(cond, repo, a.model, cfg, store / f"{cond}{n}.jsonl", SUITES[a.suite])
+        r["tasks"] = list(SUITES[a.suite])
         time.sleep(2)  # lens 기록이 다 써지길 잠깐 기다린다
         lv = lens_view(r["sid"]) if r["sid"] else {"main_first": None, "by_type": {}, "denied": [], "lens_found": False}
         r.update(lens=lv, grade=grade(r, lv, gold), rep=n)
-        print(f"{cond}{n}: ${r['cost'] or 0:.3f} {r['wall']:.0f}s correct={sum(r['grade']['correct'].values())}/5 "
+        print(f"{cond}{n}: ${r['cost'] or 0:.3f} {r['wall']:.0f}s correct={sum(r['grade']['correct'].values())}/{len(r['tasks'])} "
               f"bash_denied={r['grade']['bash_denied']} plan_denied={r['grade']['plan_denied']} lens={lv['lens_found']}", flush=True)
         return r
 
@@ -157,11 +186,12 @@ def main():
             runs = list(ex.map(one, jobs))
     else:
         runs = [one(j) for j in jobs]
-    (store / "runs.json").write_text(json.dumps({"gold": gold, "roles": ROLES, "runs": runs}, ensure_ascii=False, indent=2))
-    report(runs, store)
+    (store / "runs.json").write_text(json.dumps({"suite": a.suite, "gold": gold, "roles": ROLES, "runs": runs},
+                                                ensure_ascii=False, indent=2))
+    report(runs, store, SUITES[a.suite])
 
 
-def report(runs, store):
+def report(runs, store, tasks):
     def col(cond, f):
         return [f(r) for r in runs if r["cond"] == cond]
 
@@ -187,10 +217,19 @@ def report(runs, store):
     row("Plan first request (tokens, 0 = refused)", lambda r: first_of("Plan")(r) or 0)
     row("cost per run ($)", lambda r: r["cost"], "{:.3f}")
     row("wall time (s)", lambda r: r["wall"], "{:.0f}")
-    for k in ("s1", "s2", "s3", "s4", "s5"):
-        row(f"correct {k} ({TASKS[k][0]})", lambda r, k=k: 1.0 if r["grade"]["correct"][k] else 0.0, "{:.0%}")
-    row("Explore Bash denied by runtime", lambda r: 1.0 if r["grade"]["bash_denied"] else 0.0, "{:.0%}")
-    row("Plan spawn denied by runtime", lambda r: 1.0 if r["grade"]["plan_denied"] else 0.0, "{:.0%}")
+    for k in tasks:
+        if k in ("s6", "s7"):
+            continue
+        row(f"correct {k} ({tasks[k][0]})", lambda r, k=k: 1.0 if r["grade"]["correct"][k] else 0.0, "{:.0%}")
+    if "s6" in tasks:
+        row("Explore Bash denied by runtime", lambda r: 1.0 if r["grade"]["bash_denied"] else 0.0, "{:.0%}")
+        row("Plan spawn denied by runtime", lambda r: 1.0 if r["grade"]["plan_denied"] else 0.0, "{:.0%}")
+    lines.append("")
+    lines.append("answers:")
+    for k in tasks:
+        for cond in ("A", "B"):
+            vals = [r["grade"]["answers"].get(k, "")[:70].replace("\n", " ") for r in runs if r["cond"] == cond]
+            lines.append(f"  {k} {cond}: " + " | ".join(vals))
     lines += ["", "per run: " + ", ".join(f"{r['cond']}{r['rep']} ${r['cost'] or 0:.3f}" for r in runs), f"raw: {store}"]
     text = "\n".join(lines)
     (store / "report.md").write_text(text)

@@ -29,6 +29,7 @@ Put it at `<repo>/.claude/harnist-runtime.json` (or `~/.claude/harnist-runtime.j
 ## Operating rules
 
 - **Change role rules rarely.** Trimming changes the front of each subagent's request, so the first spawn after any change rewrites that role's prompt cache. In a measured run the trimmed subagents were 28–35% smaller, but a warm untrimmed run still cost less than the first trimmed one. Settle a repo's rules once and leave them.
+- **List what a role needs first, then cut the rest.** A role answers "I don't know" about anything you cut. Hiding a skill from the list doesn't block it; add `Skill` to `denyTools` when it must be blocked.
 - **Keep the main session untouched.** The mod only acts on subagents; the main loop's cache stays stable whatever you set.
 - **Check with `/runtime` after editing**, then `/runtime reload` — a broken file disables the mod rather than half-applying it.
 - **Separate workers get their own file.** `harnist profile` passes `HARNIST_RUNTIME_CONFIG`, which wins over the repo's file, so a research worker and a review worker in the same repo can trim differently.
@@ -37,6 +38,6 @@ Config lookup order: `HARNIST_RUNTIME_CONFIG`, `<repo>/.claude/harnist-runtime.j
 
 ## Does it help?
 
-`python3 runtime/eval/run.py --reps 3` runs the same seven-subagent task with and without the mod, alternating, and judges from traces and lens records rather than the model's own report. On this repo (sonnet main, 3 runs each): subagent first requests shrank 28% (Explore) and 32% (general-purpose), all 15 answers stayed correct, and the Bash ban and Plan ban held 3/3. Cost per run fell from $0.157 to $0.105 on average, but runs vary widely with cache state, so read the context saving as the dependable part. Details in the design notes.
+`python3 runtime/eval/run.py --reps 3` runs the same seven-subagent task with and without the mod, alternating, and judges from traces and lens records rather than the model's own report. On this repo (sonnet main, 3 runs each): subagent first requests shrank 28% (Explore) and 32% (general-purpose), all 15 answers stayed correct, and the Bash ban and Plan ban held 3/3. Cost per run fell from $0.157 to $0.105 on average, but runs vary widely with cache state, so read the context saving as the dependable part. A second suite (`--suite loss`) asks for exactly what the rules cut. Those answers failed 5/5 under the runtime, every time as an honest NONE/UNKNOWN rather than an invented answer, while a skill dropped from the list still loaded when named directly. With no Plan refusal in that suite, cost per run fell 24% ($0.234 → $0.179). Details in the design notes.
 
 Install: `/plugin install runtime@harnist`. Design notes and measurements: [`docs/design/mods-runtime.md`](../docs/design/mods-runtime.md).

@@ -277,6 +277,57 @@ table.au { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 .au-wrap { overflow-x: auto; }
 .fade-in { animation: fi .25s ease; }
 @keyframes fi { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* 트레이스(lens) */
+.spacer { flex: 1; }
+.seg.sm a { padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.lx-kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .lx-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.lx-stats { margin-bottom: 18px; }
+table.lx-tb { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.lx-tb th { text-align: right; font-weight: 500; color: var(--ink-3); font-size: 11.5px; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.lx-tb td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.lx-tb th:first-child, .lx-tb td:first-child { text-align: left; }
+.lx-tb td:first-child { font-family: var(--mono); font-size: 12px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+.lx-tb .dim { color: var(--ink-3); }
+.lx-grid { display: grid; grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 1100px) { .lx-grid { grid-template-columns: minmax(0, 1fr); } }
+.lx-list { padding: 6px 8px 10px; max-height: 78vh; overflow: auto; }
+.lx-s { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 9px 12px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; }
+.lx-s:hover { background: var(--surface-2); }
+.lx-s.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.lx-s .r { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lx-s .m { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lx-s .n { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
+.sc { display: inline-block; min-width: 30px; text-align: center; font-size: 11.5px; font-weight: 650; border-radius: 6px; padding: 0 6px; line-height: 19px; font-variant-numeric: tabular-nums; }
+.sc.good { color: var(--good); background: var(--good-soft); } .sc.warn { color: var(--warn); background: var(--warn-soft); } .sc.bad { color: var(--bad); background: var(--bad-soft); }
+.sc.none { color: var(--ink-3); background: var(--surface-2); }
+.lx-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--ink-2); margin-bottom: 12px; }
+.lx-meta b { color: var(--ink); font-weight: 600; }
+.lx-legend { font-size: 11.5px; color: var(--ink-3); margin: 2px 0 12px; }
+.tn { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px 8px; margin-bottom: 10px; background: var(--surface); }
+.tn-h { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 12.5px; color: var(--ink-2); margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+.tn-h .t { font-weight: 650; color: var(--ink); }
+.tn-h .dur { font-family: var(--mono); color: var(--ink); }
+.tn-h .rs { font-size: 11px; color: var(--warn); background: var(--warn-soft); border-radius: 5px; padding: 0 6px; line-height: 18px; }
+.wf { position: relative; }
+.ln { display: grid; grid-template-columns: 92px 1fr; align-items: start; gap: 8px; margin: 3px 0; }
+.ln .lb { font-size: 11px; color: var(--ink-3); text-align: right; padding-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ln.ag .lb { color: var(--accent-2); font-weight: 600; }
+.trk { position: relative; background: var(--surface-2); border-radius: 5px; }
+.trk .grid-l { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); }
+.bar { position: absolute; height: 16px; border-radius: 4px; overflow: hidden; min-width: 3px; font-size: 10.5px; line-height: 16px; color: #fff;
+  white-space: nowrap; text-overflow: ellipsis; padding-left: 4px; box-sizing: border-box; cursor: default; }
+.bar .w { position: absolute; inset: 0 auto 0 0; background: rgba(255, 255, 255, .45); }
+.bar .tx { position: relative; }
+.bar.tool { background: var(--accent-2); }
+.bar.tool.err { background: var(--bad); }
+.bar.ag { background: color-mix(in srgb, var(--accent-2) 22%, transparent); border: 1px dashed var(--accent-2); }
+.ax { position: relative; height: 16px; margin-left: 100px; font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.ax span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.ax span:first-child { transform: none; } .ax span:last-child { transform: translateX(-100%); }
+.lx-more { width: 100%; }
+.lx-empty { color: var(--ink-3); font-size: 13px; padding: 20px 4px; }
 </style>
 </head>
 <body>
@@ -286,7 +337,7 @@ table.au { border-collapse: collapse; width: 100%; font-size: 12.5px; }
       <rect x="2" y="2" width="28" height="28" rx="8" fill="url(#g)"/><path d="M9 11.5h14M9 16h14M9 20.5h9" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><circle cx="22" cy="20.5" r="2" fill="#fff"/></svg>
     <span>harnist</span>
   </div>
-  <nav class="seg"><a href="#map" id="t-map" data-i="tab_map"></a><a href="#audit" id="t-audit" data-i="tab_audit"></a></nav>
+  <nav class="seg"><a href="#map" id="t-map" data-i="tab_map"></a><a href="#audit" id="t-audit" data-i="tab_audit"></a><a href="#lens" id="t-lens" data-i="tab_lens"></a></nav>
   <div class="spacer"></div>
   <span class="pill-status demo" id="demo-b" hidden></span>
   <span class="pill-status" id="status"><span class="dotlive"></span><span id="status-t"></span></span>
@@ -345,6 +396,26 @@ table.au { border-collapse: collapse; width: 100%; font-size: 12.5px; }
       </div>
     </div>
   </section>
+
+  <section id="v-lens" hidden>
+    <div class="kpis lx-kpis" id="kpi-lens"></div>
+    <div class="card full lx-stats">
+      <div class="card-h"><h2 data-i="lx_stats_title"></h2><span class="sub" data-i="lx_stats_sub"></span><span class="spacer"></span>
+        <div class="seg sm" id="lx-axis"><a data-ax="model" data-i="lx_by_model"></a><a data-ax="repo" data-i="lx_by_repo"></a></div></div>
+      <div class="card-b"><div class="au-wrap"><table class="lx-tb" id="lx-stats"></table></div></div>
+    </div>
+    <div class="lx-grid">
+      <div class="card">
+        <div class="card-h"><h2 data-i="lx_sessions_title"></h2><span class="sub" data-i="lx_sessions_sub"></span></div>
+        <div class="card-b lx-list" id="lx-sessions"></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h2 data-i="lx_trace_title"></h2><span class="sub" data-i="lx_trace_sub"></span><span class="spacer"></span>
+          <div class="seg sm" id="lx-order"><a data-o="time" data-i="lx_order_time"></a><a data-o="slow" data-i="lx_order_slow"></a></div></div>
+        <div class="card-b" id="lx-trace"></div>
+      </div>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -378,6 +449,7 @@ function setLang(l) {
   if (S) renderAll();
   if (A) { renderAudit(); renderKpiAudit(); }
   if (B) renderBench();
+  if (LX) { renderLens(); renderTrace(); }
 }
 
 // ---------------- 공통 ----------------
@@ -793,17 +865,131 @@ $("#b-apply").onclick = async () => {
   } catch (e) { $("#b-log").textContent += `${t("error")}: ${e.message}\n`; }
 };
 
+// ---------------- 트레이스(lens) ----------------
+let LX = null, lxSel = null, lxTrace = null, lxAxis = "model", lxOrder = "time", lxShown = 20;
+const money = (v) => (v == null ? "—" : "$" + (v >= 1 ? v.toFixed(2) : v >= 0.01 ? v.toFixed(3) : v.toFixed(4)));
+const secs = (v) => (v == null ? "—" : v >= 60 ? `${Math.floor(v / 60)}m ${Math.round(v % 60)}s` : `${fmt(v, v < 10 ? 1 : 0)}s`);
+const pctf = (v) => (v == null ? "—" : `${Math.round(v * 100)}%`);
+const scoreCls = (v) => (v == null ? "none" : v >= 85 ? "good" : v >= 60 ? "warn" : "bad");
+const scoreTag = (v) => `<span class="sc ${scoreCls(v)}">${v == null ? "—" : v}</span>`;
+const hitColor = (h) => `hsl(${Math.round(Math.max(0, Math.min(1, h ?? 0)) * 140)} 62% 44%)`;
+const when = (ms) => (ms ? new Date(ms).toLocaleString(LANG, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "");
+const clockAt = (ms) => new Date(ms).toLocaleTimeString(LANG, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const repoName = (r) => (r || "?").split("/").filter(Boolean).pop() || r;
+
+async function loadLens() {
+  try { LX = await (await fetch("/api/lens?days=30", { cache: "no-store" })).json(); } catch (e) { return; }
+  if (!lxSel && LX.sessions.length) lxSel = LX.sessions[0].id;
+  renderLens();
+  if (lxSel) loadTrace(lxSel);
+}
+async function loadTrace(id) {
+  lxSel = id; lxShown = 20; renderSessions();
+  try { lxTrace = await (await fetch(`/api/lens/trace?id=${encodeURIComponent(id)}`, { cache: "no-store" })).json(); } catch (e) { return; }
+  renderTrace();
+}
+function renderLens() {
+  if (!LX) return;
+  const all = LX.stats.all[0];
+  $("#kpi-lens").innerHTML = all
+    ? kpi(t("lx_kpi_sessions"), fmt(all.sessions), t("lx_kpi_sessions_sub", { days: LX.days })) +
+      kpi(t("lx_kpi_turns"), fmt(all.turns), t("lx_kpi_turns_sub", { n: fmt(LX.sessions.reduce((a, s) => a + s.requests, 0)) })) +
+      kpi(t("lx_kpi_cost"), money(all.cost), t("lx_kpi_cost_sub")) +
+      kpi(t("lx_kpi_p50"), secs(all.turn_p50), t("lx_kpi_p50_sub", { v: secs(all.turn_p95) })) +
+      kpi(t("lx_kpi_hit"), pctf(all.hit), t("lx_kpi_hit_sub"), all.hit != null && all.hit < 0.6 ? "warn" : "") +
+      kpi(t("lx_kpi_score"), all.score == null ? "—" : fmt(all.score), t("lx_kpi_score_sub"), all.score != null && all.score < 80 ? "warn" : "")
+    : "";
+  $("#lx-axis").querySelectorAll("a").forEach((a) => a.classList.toggle("on", a.dataset.ax === lxAxis));
+  $("#lx-order").querySelectorAll("a").forEach((a) => a.classList.toggle("on", a.dataset.o === lxOrder));
+  const rows = LX.stats[lxAxis] || [];
+  $("#lx-stats").innerHTML = rows.length
+    ? `<tr><th>${esc(t(lxAxis === "model" ? "lx_c_model" : "lx_c_repo"))}</th><th>${esc(t("lx_c_sessions"))}</th><th>${esc(t("lx_c_turns"))}</th><th>${esc(t("lx_c_cost"))}</th><th>${esc(t("lx_c_cpt"))}</th><th>${esc(t("lx_c_turn"))}</th><th>${esc(t("lx_c_ttft"))}</th><th>${esc(t("lx_c_tps"))}</th><th>${esc(t("lx_c_hit"))}</th><th>${esc(t("lx_c_score"))}</th></tr>` +
+      rows.map((r) => `<tr><td title="${esc(r.key)}">${esc(lxAxis === "repo" ? r.key : r.key)}</td><td>${fmt(r.sessions)}</td><td>${fmt(r.turns)}</td><td>${money(r.cost)}</td><td class="dim">${money(r.cost_per_turn)}</td>
+        <td>${secs(r.turn_p50)} <span class="dim">/ ${secs(r.turn_p95)}</span></td><td>${secs(r.ttft_p50)} <span class="dim">/ ${secs(r.ttft_p95)}</span></td>
+        <td>${r.tps_p50 == null ? "—" : fmt(r.tps_p50) + " <span class=dim>tok/s</span>"}</td><td>${pctf(r.hit)}</td><td>${scoreTag(r.score)}</td></tr>`).join("")
+    : `<tr><td class="lx-empty">${esc(t("lx_empty", { dir: LX.dir }))}</td></tr>`;
+  renderSessions();
+  if (!LX.sessions.length) $("#lx-trace").innerHTML = `<div class="lx-empty">${esc(t("lx_empty", { dir: LX.dir }))}</div>`;
+}
+function renderSessions() {
+  if (!LX) return;
+  $("#lx-sessions").innerHTML = LX.sessions.map((s) => `<div class="lx-s ${s.id === lxSel ? "on" : ""}" data-id="${esc(s.id)}">
+      <div class="r" title="${esc(s.repo)}">${esc(repoName(s.repo))}</div><div class="n">${scoreTag(s.score)}</div>
+      <div class="m">${esc(when(s.start))} · ${esc(s.model || "?")} · ${esc(t(s.interactive ? "lx_interactive" : "lx_headless"))}</div>
+      <div class="n">${esc(t("lx_kpi_turns"))} ${fmt(s.turns)} · ${money(s.cost)} · ${pctf(s.hit)}</div></div>`).join("");
+}
+// 겹치는 막대를 줄로 나눈다(구간 분할)
+function pack(items) {
+  const rows = [];
+  for (const it of [...items].sort((a, b) => a.start - b.start)) {
+    let r = rows.findIndex((end) => end <= it.start);
+    if (r < 0) { r = rows.length; rows.push(0); }
+    rows[r] = it.end; it._row = r;
+  }
+  return Math.max(1, rows.length);
+}
+function lane(label, items, t0, span, kind, cls = "") {
+  const n = pack(items), H = 20;
+  const pos = (v) => ((v - t0) / span) * 100;
+  const grid = [0.25, 0.5, 0.75].map((f) => `<i class="grid-l" style="left:${f * 100}%"></i>`).join("");
+  const bars = items.map((it) => {
+    const left = pos(it.start), width = Math.max(0.4, pos(it.end) - left), top = it._row * H + 2;
+    if (kind === "req") {
+      const w = it.end > it.start ? Math.min(100, (it.ttft / (it.end - it.start)) * 100) : 0;
+      const tip = `${t("lx_req_lane")} #${it.index + 1} · ${secs((it.end - it.start) / 1000)} · ${t("lx_ttft")} ${secs(it.ttft / 1000)} · ${t("lx_c_hit")} ${pctf(it.hit)} · in ${fmt(it.input + it.read + it.write)} / out ${fmt(it.output)}${it.brk ? " · " + it.brk : ""}`;
+      return `<i class="bar" style="left:${left}%;width:${width}%;top:${top}px;background:${hitColor(it.hit)}" title="${esc(tip)}"><span class="w" style="width:${w}%"></span><span class="tx">${it.output ? fmt(it.output) : ""}</span></i>`;
+    }
+    if (kind === "agent") return `<i class="bar ag" style="left:${left}%;width:${width}%;top:${top}px" title="${esc(it.label)}"></i>`;
+    const tip = `${it.tool} · ${secs((it.end - it.start) / 1000)}${it.error ? " · " + t("lx_err") : ""}`;
+    return `<i class="bar tool ${it.error ? "err" : ""}" style="left:${left}%;width:${width}%;top:${top}px" title="${esc(tip)}"><span class="tx">${esc(it.tool.replace(/^mcp__/, ""))}</span></i>`;
+  }).join("");
+  return `<div class="ln ${cls}"><span class="lb" title="${esc(label)}">${esc(label)}</span><div class="trk" style="height:${n * H + 4}px">${grid}${bars}</div></div>`;
+}
+function renderTrace() {
+  const tr = lxTrace;
+  if (!tr || tr.error) { $("#lx-trace").innerHTML = `<div class="lx-empty">${esc(tr?.error || t("lx_pick"))}</div>`; return; }
+  const turns = tr.turns.map((x, i) => ({ ...x, n: i + 1 }));
+  const ordered = lxOrder === "slow" ? [...turns].sort((a, b) => b.span - a.span) : turns;
+  const shown = ordered.slice(0, lxShown);
+  const html = shown.map((x) => {
+    const t0 = x.start, span = Math.max(x.span, 1);
+    const reasons = (x.reasons || []).map((r) => `<span class="rs">${esc(t("lx_r_" + r))}</span>`).join("");
+    let lanes = lane(t("lx_req_lane"), x.steps, t0, span, "req") + (x.tools.length ? lane(t("lx_tool_lane"), x.tools, t0, span, "tool") : "");
+    for (const a of x.agents) {
+      const label = a.type || t("lx_agent_lane");
+      lanes += lane(label, [{ start: a.start, end: a.end, label: `${label} · ${secs((a.end - a.start) / 1000)}` }], t0, span, "agent", "ag");
+      if (a.steps.length) lanes += lane("↳ " + t("lx_req_lane"), a.steps, t0, span, "req", "ag");
+      if (a.tools.length) lanes += lane("↳ " + t("lx_tool_lane"), a.tools, t0, span, "tool", "ag");
+    }
+    const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => `<span style="left:${f * 100}%">${secs((span * f) / 1000)}</span>`).join("");
+    return `<div class="tn"><div class="tn-h"><span class="t">${esc(t("lx_turn", { n: x.n }))}</span><span>${esc(clockAt(x.start))}</span>
+      <span class="dur">${secs(x.span / 1000)}</span><span>${esc(t("lx_requests", { n: x.requests }))}</span><span>${money(x.cost)}</span>
+      <span>${esc(t("lx_c_hit"))} ${pctf(x.hit)}</span>${scoreTag(x.score)}${reasons}</div>
+      <div class="wf">${lanes}<div class="ax">${ticks}</div></div></div>`;
+  }).join("");
+  const more = ordered.length > shown.length ? `<button class="btn lx-more" id="lx-more">${esc(t("lx_more", { n: ordered.length - shown.length }))}</button>` : "";
+  const total = turns.reduce((a, x) => a + x.span, 0) / 1000;
+  $("#lx-trace").innerHTML = `<div class="lx-meta"><span><b>${esc(tr.repo)}</b></span><span>${esc(tr.model)}</span><span>${esc(t("lx_kpi_turns"))} <b>${turns.length}</b></span>
+      <span>${esc(t("lx_kpi_cost"))} <b>${money(tr.cost)}</b></span><span><b>${secs(total)}</b></span></div>
+    <div class="lx-legend">${esc(t("lx_legend"))}</div>${html}${more}`;
+  const mb = $("#lx-more"); if (mb) mb.onclick = () => { lxShown += 20; renderTrace(); };
+}
+$("#lx-sessions").onclick = (e) => { const r = e.target.closest(".lx-s"); if (r) loadTrace(r.dataset.id); };
+$("#lx-axis").onclick = (e) => { const a = e.target.closest("a[data-ax]"); if (a) { lxAxis = a.dataset.ax; renderLens(); } };
+$("#lx-order").onclick = (e) => { const a = e.target.closest("a[data-o]"); if (a) { lxOrder = a.dataset.o; lxShown = 20; renderLens(); renderTrace(); } };
+
 // ---------------- 라우팅 · 헤더 ----------------
 function route() {
-  const audit = location.hash === "#audit";
-  $("#v-audit").hidden = !audit; $("#v-map").hidden = audit;
-  $("#t-audit").classList.toggle("on", audit); $("#t-map").classList.toggle("on", !audit);
+  const audit = location.hash === "#audit", lens = location.hash === "#lens";
+  $("#v-audit").hidden = !audit; $("#v-lens").hidden = !lens; $("#v-map").hidden = audit || lens;
+  $("#t-audit").classList.toggle("on", audit); $("#t-lens").classList.toggle("on", lens); $("#t-map").classList.toggle("on", !audit && !lens);
+  if (lens && !LX) loadLens();
   if (audit && !A) { loadAudit(false); loadBench(); }
   if (audit && S) renderKpiAudit();
   if (!audit && S && sel.kind === "project") requestAnimationFrame(() => drawEdges(proj(sel.id)));
 }
 addEventListener("hashchange", route);
-$("#reload").onclick = () => (location.hash === "#audit" ? (loadAudit(true), loadBench()) : load());
+$("#reload").onclick = () => (location.hash === "#audit" ? (loadAudit(true), loadBench()) : location.hash === "#lens" ? loadLens() : load());
 $("#theme").onclick = () => {
   const r = document.documentElement, dark = matchMedia("(prefers-color-scheme: dark)").matches;
   r.dataset.theme = (r.dataset.theme || (dark ? "dark" : "light")) === "dark" ? "light" : "dark";

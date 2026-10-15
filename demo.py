@@ -151,6 +151,66 @@ teams:
     return {"workspace": ws, "registry": reg, "home": home, "plugins": plug}
 
 
+def fake_lens(home: Path, ws: Path) -> None:
+    """가짜 lens 기록 — 트레이스 탭이 비지 않게. 턴·요청·도구·서브에이전트·비용·점수를 고루 섞는다."""
+    import random
+    rnd = random.Random(7)
+    d = home / "lens"
+    d.mkdir(parents=True, exist_ok=True)
+    base = int(time.time() * 1000) - 3 * 3600 * 1000
+    plans = [("shop-web", "claude-opus-5-5[1m]", True, 6), ("data-pipeline", "claude-sonnet-5-5", True, 4),
+             ("shop-web", "claude-haiku-5-5", False, 2), ("mobile-app", "claude-opus-5-5[1m]", True, 5)]
+    for si, (repo, model, interactive, n_turns) in enumerate(plans):
+        rows = [{"v": 1, "t": base, "kind": "session", "cwd": str(ws / repo), "model": model, "interactive": interactive}]
+        now, cost = base + si * 40 * 60 * 1000, 0.0
+        for ti in range(n_turns):
+            tid, start = f"t{si}-{ti}", now
+            rows.append({"v": 1, "t": start, "kind": "turnStart", "turnId": tid, "agentId": "", "at": start})
+            failed = []
+            for k in range(rnd.randint(1, 6)):
+                ttft = rnd.randint(900, 2600)
+                ms = ttft + rnd.randint(800, 9000)
+                read = 20000 + ti * 9000 if (k or ti) else 0
+                write = rnd.randint(300, 4000) if read else 24000
+                rows.append({"v": 1, "t": now + ms, "kind": "step", "turnId": tid, "index": k, "model": model, "agentId": "",
+                             "input": 4, "output": rnd.randint(60, 1800), "cacheRead": read, "cacheWrite": write,
+                             "at": now + ms, "ms": ms, "ttft": ttft, "brk": "" if read else "cold", "stop": "tool_use"})
+                now += ms + 120
+                for tool in rnd.sample(["Read", "Grep", "Edit", "Bash", "mcp__figma__get_frame"], rnd.randint(0, 2)):
+                    tms = rnd.randint(200, 6000 if tool == "Bash" else 1500)
+                    err = tool == "Bash" and rnd.random() < 0.25
+                    if err:
+                        failed.append(tool)
+                    rows.append({"v": 1, "t": now + tms, "kind": "tool", "tool": tool, "start": now, "ms": tms, "agentId": "",
+                                 "turnId": tid, "isError": err})
+                    now += tms + 80
+            if ti == 1:  # 서브에이전트 한 번
+                aid, astart = f"a{si}", start + 1500
+                rows.append({"v": 1, "t": astart, "kind": "turnStart", "turnId": f"s{si}", "agentId": aid, "at": astart})
+                rows.append({"v": 1, "t": astart + 5200, "kind": "step", "turnId": f"s{si}", "index": 0, "model": "claude-haiku-5-5",
+                             "agentId": aid, "input": 3, "output": 420, "cacheRead": 9000, "cacheWrite": 2100,
+                             "at": astart + 5200, "ms": 5200, "ttft": 1100, "brk": "", "stop": "tool_use"})
+                rows.append({"v": 1, "t": astart + 6400, "kind": "tool", "tool": "Grep", "start": astart + 5300, "ms": 1100,
+                             "agentId": aid, "turnId": "", "isError": False})
+                rows.append({"v": 1, "t": astart + 9800, "kind": "agentDone", "agentId": aid, "type": "Explore", "durationMs": 8300})
+                now = max(now, astart + 9800)
+            cost += rnd.uniform(0.02, 0.4) if "opus" in model else rnd.uniform(0.004, 0.05)
+            reasons = (["failed"] if failed else []) + (["repeat"] if len(failed) > 1 else [])
+            score = max(0, 100 - 10 * len(failed) - (15 if len(failed) > 1 else 0))
+            rows.append({"v": 1, "t": now, "kind": "turn", "turnId": tid, "durationMs": now - start, "score": score,
+                         "reasons": reasons, "hookChars": 240, "ctx": 30000 + ti * 9000})
+            rows.append({"v": 1, "t": now + 50, "kind": "cost", "usd": round(cost, 4)})
+            now += rnd.randint(20, 240) * 1000
+        rows.append({"v": 1, "t": base, "kind": "snapshot", "detail": "full", "total": 31000, "window": 1000000, "categories": [
+            {"name": "System prompt", "kind": "used", "tokens": 3900}, {"name": "System tools", "kind": "used", "tokens": 9800},
+            {"name": "Skills", "kind": "used", "tokens": 3100}, {"name": "Messages", "kind": "used", "tokens": 14200}],
+            "items": [{"kind": "skill", "name": "translate-docs", "source": "userSettings", "tokens": 140, "deferred": 0},
+                      {"kind": "skill", "name": "slack-digest", "source": "userSettings", "tokens": 210, "deferred": 0}]})
+        f = d / f"demo-session-{si}.jsonl"
+        f.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        os.utime(f, (time.time() - si * 600, time.time() - si * 600))
+
+
 def fake_bench(home: Path, rows: list, root: Path) -> None:
     """가짜 측정 기록 — 기준선과 슬림화 뒤, 네트워크 지연 한 번을 섞어 '느려진 이유'까지 보이게 한다."""
     def probe(model, ctx, write, cost, local, net, plugins, api, tail, out, causes, skills=(41, 16800, 8000)):
@@ -197,6 +257,7 @@ def run(port: int = 8766, open_browser: bool = False, where: str | None = None) 
     w(paths["home"] / ".harnist/audit.json", json.dumps({"at": "2026-10-01 09:20", "items": [
         i for i in H.item_ids(H.global_items()) if i != "skill:image-gen"]}))  # image-gen = 점검 뒤 새로 붙은 전역 항목
     fake_bench(paths["home"], rows, paths["workspace"])
+    fake_lens(paths["home"], paths["workspace"])
     print(tr("데모 세계: {path}", path=root))
     aliases = [(str(paths["workspace"]), "~/code"), (str(paths["registry"]), "~/.harnist/registry"), (str(paths["home"]), "~/.claude"),
                (H.tilde(paths["workspace"]), "~/code"), (H.tilde(paths["registry"]), "~/.harnist/registry"), (H.tilde(paths["home"]), "~/.claude")]

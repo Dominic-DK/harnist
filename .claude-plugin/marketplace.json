@@ -11,6 +11,11 @@
       "name": "harnist",
       "source": "./plugin",
       "description": "Per-project skills, plugins and MCP for Claude Code: audit the global scope by real usage, archive with stubs, generate .claude/ from modules, and see it all in a local dashboard."
+    },
+    {
+      "name": "lens",
+      "source": "./lens",
+      "description": "Langfuse-lite for Claude Code: a mod that records what each session loaded and used, per-request cache hits, turn scores and cost — live in a /lens pane and a line under the prompt, with a lens-review skill that turns the numbers into harness fixes. harnist view shows the traces."
     }
   ]
 }

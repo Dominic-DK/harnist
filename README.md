@@ -51,6 +51,8 @@ This repository is also a plugin marketplace:
 /plugin install harnist@harnist
 ```
 
+To record what each session loads and uses, add `/plugin install lens@harnist` too — see [Trace](#trace--lens-a-langfuse-lite-for-claude-code).
+
 The plugin adds slash commands — `/harnist:audit`, `/harnist:init`, `/harnist:sync`, `/harnist:promote`, `/harnist:view` — and a tiny SessionStart hook. The commands are user-invoked only, so they add **no always-on context**. The hook stays silent unless something needs attention, and does nothing in headless or SDK runs. The engine runs from the marketplace clone, so no separate checkout is needed.
 
 ## Features
@@ -104,6 +106,32 @@ The top tiles are the numbers that matter:
 When a segment gets slower than the baseline, the cause found in the log is shown (for example *“Grove settings request timed out after 2.65 s”*), so network noise is never mistaken for a harness regression.
 
 Savings are computed as *base tokens removed × the baseline's cost per token*, not as the billed difference, because back-to-back runs warm the cache and make billed costs look lower than they are.
+
+### Trace — lens, a Langfuse-lite for Claude Code
+
+![Trace](docs/img/trace-en.png)
+
+Audit counts what sessions *called*. To see what a session actually *carried*, and where its time and money went, install the second plugin in this marketplace, **lens**. It is a Claude Code [mod](https://code.claude.com/docs/en/plugins/mods/overview) — event handlers that run inside the session — so it reads what the model really received instead of estimating it.
+
+```
+/plugin install lens@harnist
+```
+
+For every session it writes `~/.claude/lens/<session>.jsonl`, with structure and sizes only and never message text:
+
+- **Loaded**: the `/context` breakdown per skill, memory file, MCP server (loaded vs. deferred) and agent, system-prompt sections, and text injected by hooks.
+- **Used**: tool calls with timing and failures, skill expansions, subagents.
+- **Per request**: cache read and write, time to first token, output speed, and why the cache broke — first request, model switch, idle for more than five minutes, or a changed prompt.
+- **Per turn**: a score that starts at 100 and drops for aborts, errors, failed or repeatedly failing tools, denials, permission prompts and compaction, plus the turn's cost from Claude Code's own running total.
+
+Inside Claude Code, `/lens` opens a pane (overview, load, activity; English or Korean) and a line under the prompt shows the live cache hit, how long the cache stays warm, and context use. `/lens review` — or asking for the **lens-review** skill — has Claude read the numbers through the plugin's `report` tool, propose fixes in priority order, and apply only the ones you approve.
+
+The **Trace** tab of `harnist view` turns the records into:
+
+- **Cost & latency** per model or per repo: turn time p50/p95 (subagents included), time to first token p50/p95, output speed, cache hit, score, and cost per turn.
+- **A waterfall per turn**: requests colored by cache hit with the wait for the first token shaded, tool calls with failures in red, and each subagent on its own lane.
+
+From the CLI, `harnist lens` lists items that were loaded but never used (ranked by unused sessions × tokens) and `harnist lens --stats` prints the cost and latency table. `harnist usage --json` gains a measured `lens` field for each global item.
 
 ### New projects — connect what you will actually use
 
@@ -189,6 +217,7 @@ harnist demote skill:<x> --to domain/<x> [--attach repo ...] [--dry-run]
 harnist recall skill:<x> --attach . | --global    bring an archived skill back
 harnist skills [--name-only S ...] [--reset S ...] every skill the model receives, and hiding unused descriptions
 harnist bench                                     measure startup time, base tokens and cost
+harnist lens [--days N] [--stats] [--json]         lens records — loaded but unused items, or cost and latency
 harnist audit [--mark]                            record the current global state as audited
 harnist profile list | compile <name> | probe <name> [--for claude|codex] [--format report|shell|json]
                                                   child profiles — compile flags with enforcement grades, probe that they hold
@@ -210,12 +239,15 @@ harnist profile list | compile <name> | probe <name> [--for claude|codex] [--for
 - Usage counts only explicit calls in retained session history. Claude Code keeps 30 days by default (`cleanupPeriodDays`).
 - `skillOverrides` values (`name-only`, `off`) and the skill-list budget were observed in Claude Code, not documented.
 - Telling headless runs apart relies on `CLAUDE_CODE_SESSION_ATTENDED` and `CLAUDE_CODE_ENTRYPOINT`. These were observed, not documented.
+- lens sees only the sessions it was loaded in, and needs Claude Code 2.1.287 or later. Where an organization manages Claude Code, prompt-level events (system-prompt sections, injected text, skill expansions) do not reach plugins a user installs.
+- lens costs are Claude Code's estimate at API rates; on a subscription they are not your bill. The cache TTL (five minutes or one hour) is not exposed, so lens assumes five minutes until a cache survives a longer gap.
 - CLI output and the generated `CLAUDE.md` block are in English, or Korean when `HARNIST_LANG=ko` or a Korean system locale is set. Slash-command instructions are in English; Claude answers in your language either way.
 
 ## Development
 
 ```bash
-python3 -m unittest tests.test_harnist      # 69 tests
+python3 -m unittest tests.test_harnist      # 74 tests
+claude plugin test lens                     # lens mod tests
 python3 harnist.py demo --dir /tmp/harnist-demo
 ```
 

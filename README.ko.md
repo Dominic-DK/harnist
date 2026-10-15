@@ -57,6 +57,8 @@ python3 harnist.py view --open      # ~/Documents/github 아래 레포 (HARNIST_
 - **훅**: 알릴 게 있을 때만 말하고, 헤드리스·SDK 실행에서는 아무것도 하지 않습니다.
 - **엔진**: 마켓플레이스 클론에서 실행되므로 따로 받을 필요가 없습니다.
 
+세션마다 무엇이 실리고 쓰였는지 기록하려면 `/plugin install lens@harnist`도 설치합니다. [트레이스](#트레이스--lens-claude-code용-langfuse-라이트)를 참고하세요.
+
 ## 기능
 
 ### 지도 — 무엇이 어디에 들어가나
@@ -108,6 +110,32 @@ Claude Code 세션 기록(`~/.claude/projects/*.jsonl`)을 읽어, 레포마다 
 기준선보다 느려진 구간에는 로그에서 찾은 원인이 붙습니다. 예를 들어 *"Grove settings 요청이 2.65초 만에 타임아웃"*처럼요. 그래서 네트워크 잡음을 하네스 탓으로 오해하지 않습니다.
 
 절감액은 실제 청구액 차이가 아니라 *줄어든 기본 토큰 × 기준선의 토큰당 단가*로 계산합니다. 측정을 연달아 하면 캐시가 데워져서 청구액이 실제보다 많이 줄어 보이기 때문입니다.
+
+### 트레이스 — lens, Claude Code용 Langfuse 라이트
+
+![트레이스](docs/img/trace-ko.png)
+
+점검은 세션이 무엇을 *불렀는지* 셉니다. 세션이 실제로 무엇을 *싣고* 다녔는지, 시간과 비용이 어디로 갔는지 보려면 이 마켓플레이스의 두 번째 플러그인 **lens**를 설치합니다. lens는 세션 안에서 도는 이벤트 핸들러인 Claude Code [모드](https://code.claude.com/docs/en/plugins/mods/overview)라서, 추정하는 대신 모델이 실제로 받은 것을 읽습니다.
+
+```
+/plugin install lens@harnist
+```
+
+세션마다 `~/.claude/lens/<세션>.jsonl`에 기록합니다. 구조와 크기만 남기고 메시지 본문은 남기지 않습니다.
+
+- **실린 것**: 스킬·메모리 파일·MCP 서버(실림/대기 구분)·에이전트별 `/context` 내역, 시스템 프롬프트 섹션, 훅이 넣은 텍스트.
+- **쓰인 것**: 도구 호출(걸린 시간, 실패), 스킬 펼침, 서브에이전트.
+- **요청마다**: 캐시 읽기·쓰기, 첫 토큰까지 시간, 출력 속도, 캐시가 깨진 이유(첫 요청, 모델 전환, 5분 넘는 휴지, 프롬프트 변경).
+- **턴마다**: 100점에서 시작해 중단·오류·도구 실패·같은 실패 반복·거부·권한 확인·컴팩션마다 깎이는 점수와, Claude Code가 집계하는 누적 비용으로 구한 턴 비용.
+
+Claude Code 안에서는 `/lens`로 패널(개요·로드·활동, 한국어/영어)을 열고, 입력창 아래 한 줄에 실시간 캐시 히트와 캐시 유지 남은 시간, 컨텍스트 사용량이 나옵니다. `/lens review`나 **lens-review** 스킬을 부르면 Claude가 플러그인의 `report` 도구로 숫자를 읽고 개선안을 우선순위대로 낸 뒤, 승인한 것만 적용합니다.
+
+`harnist view`의 **트레이스** 탭은 이 기록을 다음처럼 보여 줍니다.
+
+- **비용·지연**(모델별·레포별): 턴 시간 p50/p95(서브에이전트 포함), 첫 토큰 p50/p95, 출력 속도, 캐시 히트, 점수, 턴당 비용.
+- **턴별 폭포 그래프**: 캐시 히트로 색을 칠하고 첫 토큰까지의 대기를 옅게 표시한 요청, 실패를 빨갛게 표시한 도구 호출, 서브에이전트마다 따로 그린 레인.
+
+CLI에서는 `harnist lens`가 실렸지만 안 쓴 항목을 안 쓴 세션 수 × 토큰 순으로 보여 주고, `harnist lens --stats`가 비용·지연 표를 출력합니다. `harnist usage --json`의 전역 항목마다 실측 `lens` 필드가 붙습니다.
 
 ### 새 프로젝트 — 실제로 쓸 것만 연결
 
@@ -193,6 +221,7 @@ harnist demote skill:<x> --to domain/<x> [--attach 레포 ...] [--dry-run]
 harnist recall skill:<x> --attach . | --global    보관한 스킬 되살리기
 harnist skills [--name-only S ...] [--reset S ...] 모델이 받는 스킬 전부, 안 쓰는 설명 숨기기
 harnist bench                                     기동 시간·기본 토큰·비용 측정
+harnist lens [--days N] [--stats] [--json]         lens 기록 — 실렸지만 안 쓴 항목, 또는 비용·지연
 harnist audit [--mark]                            현재 전역 상태를 점검 완료로 기록
 harnist profile list | compile <이름> | probe <이름> [--for claude|codex] [--format report|shell|json]
                                                   자식 프로필 — 인자 컴파일·강제 등급 · 실제 성립 탐침
@@ -214,12 +243,15 @@ harnist profile list | compile <이름> | probe <이름> [--for claude|codex] [-
 - 사용 집계는 남아 있는 세션 기록 속 명시적 호출만 셉니다. Claude Code는 기본 30일만 보관합니다(`cleanupPeriodDays`).
 - `skillOverrides` 값(`name-only`, `off`)과 스킬 목록 예산은 공식 문서가 아니라 Claude Code에서 실측으로 확인한 것입니다.
 - 헤드리스 실행은 `CLAUDE_CODE_SESSION_ATTENDED`와 `CLAUDE_CODE_ENTRYPOINT`로 구분합니다. 공식 문서에 있는 값이 아니라 실측으로 확인한 값입니다.
+- lens는 자신이 로드된 세션만 봅니다. Claude Code 2.1.287 이상이 필요합니다. 조직이 관리하는 Claude Code에서는 프롬프트 단계 이벤트(시스템 프롬프트 섹션, 주입 텍스트, 스킬 펼침)가 사용자가 설치한 플러그인까지 오지 않습니다.
+- lens의 비용은 Claude Code가 API 요금으로 계산한 추정치라, 구독 플랜이면 실제 청구액과 다릅니다. 캐시 TTL(5분/1시간)은 드러나지 않아서, 더 긴 휴지 뒤에도 캐시가 살아 있는 걸 보기 전까지는 5분으로 가정합니다.
 - CLI 출력과 생성되는 `CLAUDE.md` 블록은 영어가 기본이고, `HARNIST_LANG=ko`이거나 시스템 로케일이 한국어면 한국어로 나옵니다. 슬래시 명령 지시문은 영어지만, Claude는 사용자의 언어로 답합니다.
 
 ## 개발
 
 ```bash
-python3 -m unittest tests.test_harnist      # 테스트 69개
+python3 -m unittest tests.test_harnist      # 테스트 74개
+claude plugin test lens                     # lens 모드 테스트
 python3 harnist.py demo --dir /tmp/harnist-demo
 ```
 

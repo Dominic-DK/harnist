@@ -1079,6 +1079,221 @@ def lens_for_usage(row: dict, items: dict) -> dict | None:
             "used": max(p["used"] for p in parts)}
 
 
+LENS_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
+def lens_rows(sid: str) -> list[dict]:
+    """세션 하나의 lens 기록. 이름은 파일명 그대로만 받는다(경로 조작 차단)."""
+    if not LENS_ID.match(sid or ""):
+        raise HarnistError(f"bad lens session id: {sid!r}")
+    rows = []
+    try:
+        for line in (lens_dir() / f"{sid}.jsonl").open(errors="ignore"):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("v") == 1:
+                rows.append(r)
+    except FileNotFoundError:
+        raise HarnistError(f"no lens session {sid}")
+    return rows
+
+
+def _pct(xs: list, q: float):
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return None
+    i = min(len(xs) - 1, max(0, round(q * (len(xs) - 1))))
+    return xs[i]
+
+
+def _hit(read: int, write: int, fresh: int):
+    total = read + write + fresh
+    return round(read / total, 3) if total else None
+
+
+def lens_trace(sid: str) -> dict:
+    """세션 → 메인 턴 → 요청·도구, 서브에이전트는 시작한 턴에 레인으로 붙인다. 시각은 ms epoch.
+    lens 0.4 이전 기록은 시작 시각이 없어 끝 시각 − 소요 시간으로 어림한다."""
+    rows = lens_rows(sid)
+    sess = next((r for r in rows if r.get("kind") == "session"), {})
+    turns: dict = {}
+    order: list = []
+    agents: dict = {}
+    costs = sorted((r["t"], r.get("usd", 0)) for r in rows if r.get("kind") == "cost")
+
+    def turn_of(tid: str):
+        if tid not in turns:
+            turns[tid] = {"id": tid, "start": None, "end": None, "steps": [], "tools": [], "agents": [],
+                          "score": None, "reasons": [], "duration": None}
+            order.append(tid)
+        return turns[tid]
+
+    def agent_of(aid: str):
+        return agents.setdefault(aid, {"id": aid, "type": "", "start": None, "end": None, "steps": [], "tools": []})
+
+    for r in rows:
+        k = r.get("kind")
+        if k == "turnStart":
+            if r.get("agentId"):
+                a = agent_of(r["agentId"])
+                a["start"] = a["start"] or r.get("at") or r["t"]
+            else:
+                turn_of(r["turnId"])["start"] = r.get("at") or r["t"]
+        elif k == "step":
+            end = r.get("at") or r["t"]
+            st = {"index": r.get("index", 0), "start": end - r.get("ms", 0), "end": end, "ttft": r.get("ttft", 0),
+                  "model": r.get("model", ""), "input": r.get("input", 0), "output": r.get("output", 0),
+                  "read": r.get("cacheRead", 0), "write": r.get("cacheWrite", 0), "brk": r.get("brk", ""),
+                  "stop": r.get("stop", "")}
+            st["hit"] = _hit(st["read"], st["write"], st["input"])
+            if r.get("agentId"):
+                agent_of(r["agentId"])["steps"].append(st)
+            elif r.get("turnId"):
+                turn_of(r["turnId"])["steps"].append(st)
+        elif k == "tool":
+            start = r.get("start") or (r["t"] - r.get("ms", 0))
+            tl = {"tool": r.get("tool", ""), "start": start, "end": start + r.get("ms", 0), "error": bool(r.get("isError"))}
+            if r.get("agentId"):
+                agent_of(r["agentId"])["tools"].append(tl)
+            elif r.get("turnId"):
+                turn_of(r["turnId"])["tools"].append(tl)
+            else:  # 0.4 이전 기록: 시각으로 턴을 찾는다
+                tl["_loose"] = True
+                turns.setdefault("_loose", {"tools": []})["tools"].append(tl)
+        elif k == "agentDone":
+            a = agent_of(r["agentId"])
+            a["type"], a["end"] = r.get("type", ""), r["t"]
+        elif k == "turn":
+            t = turn_of(r["turnId"])
+            t["end"], t["duration"] = r["t"], r.get("durationMs")
+            t["score"], t["reasons"] = r.get("score"), r.get("reasons", [])
+            t["hookChars"], t["ctx"] = r.get("hookChars"), r.get("ctx")
+
+    loose = turns.pop("_loose", {"tools": []})["tools"]
+    if "_loose" in order:
+        order.remove("_loose")
+    out = []
+    for tid in order:
+        t = turns[tid]
+        firsts = [s["start"] for s in t["steps"]] + [x["start"] for x in t["tools"]]
+        if t["start"] is None:
+            t["start"] = (t["end"] - t["duration"]) if t["end"] and t["duration"] else (min(firsts) if firsts else None)
+        if t["end"] is None:
+            lasts = [s["end"] for s in t["steps"]] + [x["end"] for x in t["tools"]]
+            t["end"] = max(lasts) if lasts else t["start"]
+        if t["start"] is None:
+            continue
+        out.append(t)
+    out.sort(key=lambda t: t["start"])
+    for x in loose:
+        host = next((t for t in out if t["start"] <= x["start"] <= t["end"]), None)
+        if host:
+            host["tools"].append({k: v for k, v in x.items() if k != "_loose"})
+    for a in agents.values():
+        if a["start"] is None:
+            ss = [s["start"] for s in a["steps"]] + [x["start"] for x in a["tools"]]
+            a["start"] = min(ss) if ss else None
+        if a["start"] is None:
+            continue
+        if a["end"] is None:
+            ee = [s["end"] for s in a["steps"]] + [x["end"] for x in a["tools"]]
+            a["end"] = max(ee) if ee else a["start"]
+        host = next((t for t in reversed(out) if t["start"] <= a["start"]), out[0] if out else None)
+        if host:
+            host["agents"].append(a)
+
+    def cost_at(ts: float) -> float:
+        val = 0.0
+        for at, usd in costs:
+            if at <= ts:
+                val = usd
+        return val
+
+    for t in out:
+        span_end = max([t["end"]] + [a["end"] for a in t["agents"]])
+        t["span"] = span_end - t["start"]
+        t["cost"] = round(cost_at(span_end + 2000) - cost_at(t["start"]), 6) if costs else None
+        t["requests"] = len(t["steps"])
+        reads = sum(s["read"] for s in t["steps"])
+        t["hit"] = _hit(reads, sum(s["write"] for s in t["steps"]), sum(s["input"] for s in t["steps"]))
+        t["output"] = sum(s["output"] for s in t["steps"])
+    return {"id": sid, "cwd": sess.get("cwd", ""), "repo": repo_of(sess["cwd"], {}) if sess.get("cwd") else "?",
+            "model": sess.get("model", ""), "interactive": sess.get("interactive"), "turns": out,
+            "cost": costs[-1][1] if costs else None}
+
+
+def _session_metrics(tr: dict) -> dict:
+    turns = tr["turns"]
+    steps = [s for t in turns for s in t["steps"]]
+    gen = [(s["output"], s["end"] - s["start"] - s["ttft"]) for s in steps if s["output"] and s["end"] - s["start"] > s["ttft"] > 0]
+    reads = sum(s["read"] for s in steps)
+    scores = [t["score"] for t in turns if t["score"] is not None]
+    return {"turns": len(turns), "requests": len(steps), "cost": tr["cost"],
+            "turn_s": [round(t["span"] / 1000, 1) for t in turns],
+            "ttft_s": [round(s["ttft"] / 1000, 2) for s in steps if s["ttft"]],
+            "tps": [round(o / (ms / 1000)) for o, ms in gen],
+            "hit": _hit(reads, sum(s["write"] for s in steps), sum(s["input"] for s in steps)),
+            "score": round(sum(scores) / len(scores)) if scores else None,
+            "start": turns[0]["start"] if turns else None, "end": max((t["start"] + t["span"] for t in turns), default=None)}
+
+
+def lens_sessions(days: int) -> list[dict]:
+    """세션 목록 — 최신 순, 트레이스 화면 왼쪽 목록용."""
+    import time
+    d = lens_dir()
+    if not d.is_dir():
+        return []
+    cutoff = time.time() - days * 86400
+    out = []
+    for f in sorted(d.glob("*.jsonl"), key=lambda p: -p.stat().st_mtime):
+        if f.stat().st_mtime < cutoff or not LENS_ID.match(f.stem):
+            continue
+        try:
+            tr = lens_trace(f.stem)
+        except HarnistError:
+            continue
+        if not tr["turns"]:
+            continue
+        m = _session_metrics(tr)
+        out.append({"id": tr["id"], "repo": tr["repo"], "model": tr["model"], "interactive": tr["interactive"],
+                    "turns": m["turns"], "requests": m["requests"], "cost": m["cost"], "hit": m["hit"], "score": m["score"],
+                    "turn_p50": _pct(m["turn_s"], .5), "start": m["start"], "end": m["end"]})
+    return out
+
+
+def lens_stats(days: int) -> dict:
+    """비용·지연 — 레포별·모델별 p50/p95 턴 시간, 첫 토큰, 생성 속도, 캐시 히트, 점수, 비용."""
+    groups: dict = {"repo": {}, "model": {}, "all": {}}
+    for s in lens_sessions(days):
+        m = _session_metrics(lens_trace(s["id"]))
+        for axis, key in (("repo", s["repo"]), ("model", s["model"] or "?"), ("all", "all")):
+            g = groups[axis].setdefault(key, {"key": key, "sessions": 0, "turns": 0, "cost": 0.0, "turn_s": [], "ttft_s": [],
+                                              "tps": [], "hits": [], "scores": []})
+            g["sessions"] += 1
+            g["turns"] += m["turns"]
+            g["cost"] += m["cost"] or 0
+            for f in ("turn_s", "ttft_s", "tps"):
+                g[f] += m[f]
+            if m["hit"] is not None:
+                g["hits"].append(m["hit"])
+            if m["score"] is not None:
+                g["scores"].append(m["score"])
+    out = {}
+    for axis, gs in groups.items():
+        rows = []
+        for g in gs.values():
+            rows.append({"key": g["key"], "sessions": g["sessions"], "turns": g["turns"], "cost": round(g["cost"], 4),
+                         "cost_per_turn": round(g["cost"] / g["turns"], 4) if g["turns"] else None,
+                         "turn_p50": _pct(g["turn_s"], .5), "turn_p95": _pct(g["turn_s"], .95),
+                         "ttft_p50": _pct(g["ttft_s"], .5), "ttft_p95": _pct(g["ttft_s"], .95), "tps_p50": _pct(g["tps"], .5),
+                         "hit": round(sum(g["hits"]) / len(g["hits"]), 3) if g["hits"] else None,
+                         "score": round(sum(g["scores"]) / len(g["scores"])) if g["scores"] else None})
+        out[axis] = sorted(rows, key=lambda r: -r["cost"])
+    return out
+
+
 def audit_path() -> Path:
     return claude_home() / ".harnist" / "audit.json"
 
@@ -2219,6 +2434,12 @@ def serve(root: Path, port: int, extra: list[Path], open_browser: bool, auto_bas
                         {"at": h["at"], "label": h["label"], **{k: v.get("ctx_tokens") for k, v in h.get("probes", {}).items()}}
                         for h in hist[-12:]], "savings": savings(base, cur) if base and cur else None,
                         "running": jobs.running("bench"), "claude": bool(shutil.which("claude"))})
+                if u.path == "/api/lens":
+                    days = int((q.get("days") or ["30"])[0])
+                    return self.reply({"sessions": lens_sessions(days), "stats": lens_stats(days), "days": days,
+                                       "dir": tilde(lens_dir()), "demo": demo})
+                if u.path == "/api/lens/trace":
+                    return self.reply(lens_trace((q.get("id") or [""])[0]))
                 if u.path.startswith("/api/job/"):
                     j = jobs.get(u.path.rsplit("/", 1)[-1])
                     return self.reply(j or {"error": tr("없는 작업")}, code=200 if j else 404)
@@ -2763,6 +2984,7 @@ def main(argv=None) -> int:
     lp.add_argument("--days", type=int, default=30)
     lp.add_argument("--top", type=int, default=20)
     lp.add_argument("--json", action="store_true")
+    lp.add_argument("--stats", action="store_true", help=tr("비용·지연 — 레포별·모델별 p50/p95"))
     dm = sub.add_parser("demote", help=tr("전역 항목을 레지스트리 모듈로 내리고 필요한 레포에만 연결"))
     dm.add_argument("item", help=tr("skill:<이름> | agent:<이름> | plugin:<id> | module:<계층/이름>"))
     dm.add_argument("--to", help=tr("보관할 모듈 이름 (base/… 또는 domain/…)"))
@@ -2842,6 +3064,20 @@ def main(argv=None) -> int:
                              last=r["last"] or "-", where=where, mod=mod))
             return 0
         if a.cmd == "lens":
+            if a.stats:
+                st = lens_stats(a.days)
+                if a.json:
+                    print(json.dumps(st, ensure_ascii=False, indent=2))
+                    return 0
+                for axis, label in (("model", tr("== 모델")), ("repo", tr("== 레포"))):
+                    print(label)
+                    for r in st[axis]:
+                        f = lambda v, u="": "-" if v is None else f"{v}{u}"
+                        print(tr("  {key:44} 세션 {s:3} 턴 {t:4}  비용 ${cost:<8} 턴 p50/p95 {p50}/{p95}  첫 토큰 p50 {ttft}  {tps} tok/s  히트 {hit}  점수 {score}",
+                                 key=r["key"][:44], s=r["sessions"], t=r["turns"], cost=r["cost"], p50=f(r["turn_p50"], "s"),
+                                 p95=f(r["turn_p95"], "s"), ttft=f(r["ttft_p50"], "s"), tps=f(r["tps_p50"]),
+                                 hit=f(None if r["hit"] is None else round(r["hit"] * 100), "%"), score=f(r["score"])))
+                return 0
             rep = lens_report(a.days)
             if a.json:
                 print(json.dumps(rep, ensure_ascii=False, indent=2))
@@ -3025,6 +3261,10 @@ def main(argv=None) -> int:
 # 테스트가 harnist.py 의 모든 tr() 템플릿이 여기 있는지 확인한다.
 
 EN = {
+    "비용·지연 — 레포별·모델별 p50/p95": "cost and latency — p50/p95 per repo and model",
+    "== 모델": "== Models",
+    "  {key:44} 세션 {s:3} 턴 {t:4}  비용 ${cost:<8} 턴 p50/p95 {p50}/{p95}  첫 토큰 p50 {ttft}  {tps} tok/s  히트 {hit}  점수 {score}":
+        "  {key:44} sessions {s:3} turns {t:4}  cost ${cost:<8} turn p50/p95 {p50}/{p95}  first token p50 {ttft}  {tps} tok/s  hit {hit}  score {score}",
     "lens 모드 실측 — 레포별 기본 로드·캐시 히트·훅 주입, 실렸지만 안 쓴 항목":
         "lens mod measurements — base load, cache hit and hook injection per repo, and items loaded but unused",
     "lens 기록이 없다 — lens 모드를 설치하고 세션을 한 번 돌린다 ({path})":

@@ -432,6 +432,64 @@ class LensTest(GlobalFixture):
         self.assertIsNone(rows["agent:idle"]["lens"])
 
 
+class LensTraceTest(GlobalFixture):
+    """lens 기록 → 트레이스·세션 목록·비용/지연."""
+
+    def write_trace(self, sid: str, model: str = "opus") -> None:
+        T = 1_000_000
+        rows = [
+            {"v": 1, "t": T, "kind": "session", "cwd": str(self.target), "model": model, "interactive": True},
+            {"v": 1, "t": T, "kind": "turnStart", "turnId": "a", "agentId": "", "at": T},
+            {"v": 1, "t": T + 4000, "kind": "step", "turnId": "a", "index": 0, "model": model, "agentId": "",
+             "input": 10, "output": 300, "cacheRead": 0, "cacheWrite": 990, "at": T + 4000, "ms": 4000, "ttft": 1000},
+            {"v": 1, "t": T + 4600, "kind": "tool", "tool": "Bash", "start": T + 4100, "ms": 500, "agentId": "", "turnId": "a", "isError": True},
+            {"v": 1, "t": T + 4200, "kind": "turnStart", "turnId": "s", "agentId": "x1", "at": T + 4200},
+            {"v": 1, "t": T + 6200, "kind": "step", "turnId": "s", "index": 0, "model": "haiku", "agentId": "x1",
+             "input": 1, "output": 50, "cacheRead": 90, "cacheWrite": 9, "at": T + 6200, "ms": 2000, "ttft": 500},
+            {"v": 1, "t": T + 9000, "kind": "agentDone", "agentId": "x1", "type": "Explore"},
+            {"v": 1, "t": T + 7000, "kind": "step", "turnId": "a", "index": 1, "model": model, "agentId": "",
+             "input": 10, "output": 600, "cacheRead": 990, "cacheWrite": 0, "at": T + 7000, "ms": 2000, "ttft": 500},
+            {"v": 1, "t": T + 7100, "kind": "turn", "turnId": "a", "durationMs": 7100, "score": 90, "reasons": ["failed"]},
+            {"v": 1, "t": T + 3000, "kind": "cost", "usd": 0.01},
+            {"v": 1, "t": T + 7200, "kind": "cost", "usd": 0.05},
+            # lens 0.3 식 옛 기록: turnStart·start 없이 끝 시각과 소요 시간만
+            {"v": 1, "t": T + 60000, "kind": "step", "turnId": "b", "index": 0, "model": model, "agentId": "",
+             "input": 1, "output": 10, "cacheRead": 900, "cacheWrite": 0},
+            {"v": 1, "t": T + 60500, "kind": "tool", "tool": "Read", "ms": 300, "agentId": ""},
+            {"v": 1, "t": T + 61000, "kind": "turn", "turnId": "b", "durationMs": 2000},
+        ]
+        write(self.home / f"lens/{sid}.jsonl", "\n".join(json.dumps(r) for r in rows) + "\n")
+
+    def test_trace_assembles_turns_requests_tools_and_subagents(self):
+        self.write_trace("s1")
+        tr = harnist.lens_trace("s1")
+        a, b = tr["turns"]
+        self.assertEqual((a["requests"], len(a["tools"]), a["score"], a["reasons"]), (2, 1, 90, ["failed"]))
+        self.assertTrue(a["tools"][0]["error"])
+        self.assertEqual([x["type"] for x in a["agents"]], ["Explore"])
+        self.assertEqual(a["span"], 9000)  # 서브에이전트가 턴보다 늦게 끝나면 거기까지
+        self.assertEqual(a["cost"], 0.05)
+        self.assertEqual(a["hit"], round(990 / 2000, 3))
+        self.assertEqual(b["start"], 1_000_000 + 61000 - 2000)  # 시작 기록이 없으면 끝 − 소요 시간
+        self.assertEqual([x["tool"] for x in b["tools"]], ["Read"])  # 턴 ID 없는 옛 도구는 시각으로 붙인다
+
+    def test_sessions_and_latency_stats(self):
+        self.write_trace("s1")
+        self.write_trace("s2", model="haiku")
+        ss = harnist.lens_sessions(36500)
+        self.assertEqual({s["id"] for s in ss}, {"s1", "s2"})
+        st = harnist.lens_stats(36500)
+        self.assertEqual(st["all"][0]["turns"], 4)
+        self.assertEqual(st["all"][0]["turn_p95"], 9.0)
+        self.assertEqual({r["key"] for r in st["model"]}, {"opus", "haiku"})
+        self.assertEqual(st["model"][0]["ttft_p50"], 0.5)
+
+    def test_trace_rejects_path_tricks(self):
+        for bad in ("../x", "a/b", "", "s1.jsonl"):
+            with self.assertRaises(harnist.HarnistError):
+                harnist.lens_trace(bad)
+
+
 class HookTest(GlobalFixture):
     def run_hook(self, cwd, **env):
         import subprocess

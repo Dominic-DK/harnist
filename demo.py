@@ -194,7 +194,27 @@ def fake_lens(home: Path, ws: Path) -> None:
                 rows.append({"v": 1, "t": astart + 6400, "kind": "tool", "tool": "Grep", "start": astart + 5300, "ms": 1100,
                              "agentId": aid, "turnId": "", "isError": False})
                 rows.append({"v": 1, "t": astart + 9800, "kind": "agentDone", "agentId": aid, "type": "Explore", "durationMs": 8300})
-                now = max(now, astart + 9800)
+                # runtime 모드가 역할별로 깎은 모습 — Explore 는 스킬·CLAUDE.md 없이, general-purpose 는 허용한 것만
+                rows.append({"v": 1, "t": astart, "kind": "agent", "type": "Explore", "model": "claude-haiku-5-5", "agentId": aid})
+                for typ, chars in (("deferred_tools_delta", 461), ("environment", 717), ("date", 27)):
+                    rows.append({"v": 1, "t": astart, "kind": "attachment", "type": typ, "chars": chars, "agentId": aid})
+                gid, gstart = f"g{si}", astart + 2600
+                rows.append({"v": 1, "t": gstart, "kind": "agent", "type": "general-purpose", "model": "claude-sonnet-5-5", "agentId": gid})
+                rows.append({"v": 1, "t": gstart, "kind": "turnStart", "turnId": f"g{si}", "agentId": gid, "at": gstart})
+                rows.append({"v": 1, "t": gstart + 6100, "kind": "step", "turnId": f"g{si}", "index": 0, "model": "claude-sonnet-5-5",
+                             "agentId": gid, "input": 3, "output": 610, "cacheRead": 11800, "cacheWrite": 1050,
+                             "at": gstart + 6100, "ms": 6100, "ttft": 1300, "brk": "", "stop": "tool_use"})
+                rows.append({"v": 1, "t": gstart + 7400, "kind": "tool", "tool": "Read", "start": gstart + 6200, "ms": 1200,
+                             "agentId": gid, "turnId": "", "isError": False})
+                rows.append({"v": 1, "t": gstart + 10900, "kind": "step", "turnId": f"g{si}", "index": 1, "model": "claude-sonnet-5-5",
+                             "agentId": gid, "input": 3, "output": 380, "cacheRead": 12900, "cacheWrite": 640,
+                             "at": gstart + 10900, "ms": 3400, "ttft": 900, "brk": "", "stop": "end_turn"})
+                rows.append({"v": 1, "t": gstart + 11000, "kind": "agentDone", "agentId": gid, "type": "general-purpose", "durationMs": 11000})
+                for typ, chars in (("skill_listing", 1129), ("instructions", 832), ("deferred_tools_delta", 802), ("environment", 717)):
+                    rows.append({"v": 1, "t": gstart, "kind": "attachment", "type": typ, "chars": chars, "agentId": gid})
+                rows.append({"v": 1, "t": gstart + 11500, "kind": "agent", "type": "Plan", "via": "tool",
+                             "deny": "Subagent spawn denied by a plugin: harnist runtime: Plan subagents are banned in this repo"})
+                now = max(now, gstart + 11500)
             cost += rnd.uniform(0.02, 0.4) if "opus" in model else rnd.uniform(0.004, 0.05)
             reasons = (["failed"] if failed else []) + (["repeat"] if len(failed) > 1 else [])
             score = max(0, 100 - 10 * len(failed) - (15 if len(failed) > 1 else 0))

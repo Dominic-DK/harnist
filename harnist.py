@@ -1004,7 +1004,7 @@ def read_lens(days: int) -> list[dict]:
                 m = re.match(r"mcp__(.+?)__", r.get("tool", ""))
                 if m:
                     s["used"].add(lens_key("mcp", m.group(1)))
-            elif k == "attachment" and not r.get("replay") and (r.get("origin") or {}).get("kind") == "hook":
+            elif k == "attachment" and not r.get("replay") and not r.get("agentId") and (r.get("origin") or {}).get("kind") == "hook":
                 s["hook_start" if r["origin"].get("event") == "SessionStart" else "hook_turns"] += r.get("chars") or 0
             elif k == "turn":
                 s["turns"] += 1
@@ -2542,8 +2542,11 @@ def serve(root: Path, port: int, extra: list[Path], open_browser: bool, auto_bas
 
 PROFILE_ENUMS = {"write": ("none", "workspace"), "inherit": ("project", "user"), "output": ("schema", "text")}
 PROFILE_BOOLS = ("network", "persist", "trace")
-PROFILE_TOOLS = ("read", "search", "edit", "shell", "web")
-PROFILE_KEYS = set(PROFILE_ENUMS) | set(PROFILE_BOOLS) | {"tools", "shell_allow", "schema", "model", "effort", "description"}
+PROFILE_TOOLS = ("read", "search", "edit", "shell", "web", "agent")
+PROFILE_KEYS = set(PROFILE_ENUMS) | set(PROFILE_BOOLS) | {"tools", "shell_allow", "schema", "model", "effort", "description",
+                                                          "mods", "runtime"}
+# profiles.<이름>.mods 에 이름만 쓰면 이 레포의 모드 플러그인 폴더로 푼다 — 그 밖의 값은 경로
+BUNDLED_MODS = ("lens", "runtime")
 CHILD_PROFILES = {
     "review": {"description": "독립 검토 — 읽기 전용, 사용자 환경 차단, 스키마로만 반환",
                "write": "none", "network": False, "inherit": "project", "tools": ["read", "search"],
@@ -2553,7 +2556,7 @@ CHILD_PROFILES = {
                  "shell_allow": ["git status", "git diff"], "output": "schema", "persist": False, "trace": True},
 }
 CLAUDE_TOOLS = {"read": ["Read"], "search": ["Glob", "Grep"], "edit": ["Edit", "Write"], "shell": ["Bash"],
-                "web": ["WebFetch", "WebSearch"]}
+                "web": ["WebFetch", "WebSearch"], "agent": ["Agent"]}
 PROBE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["done"],
                 "properties": {"done": {"type": "string"}}}
 
@@ -2588,6 +2591,24 @@ def validate_profile(name: str, p: dict) -> None:
         p["schema"] = None  # 스키마 파일 없이 schema 출력 — compile 이 최소 스키마를 쓰라고 알린다
     if p.get("shell_allow") and "shell" not in (p.get("tools") or []):
         raise HarnistError(tr("profiles.{name}: shell_allow 가 있으면 tools 에 shell 이 있어야 한다", name=name))
+    mods = p.get("mods")
+    if mods is not None and (not isinstance(mods, list) or not all(isinstance(m, str) and m for m in mods)):
+        raise HarnistError(tr("profiles.{name}.mods: 모드 이름·경로 목록이어야 한다", name=name))
+    if p.get("runtime") is not None:
+        if not isinstance(p["runtime"], str):
+            raise HarnistError(tr("profiles.{name}.runtime: 역할 설정 JSON 경로여야 한다", name=name))
+        if "runtime" not in (mods or []):
+            raise HarnistError(tr("profiles.{name}: runtime 을 쓰려면 mods 에 runtime 이 있어야 한다", name=name))
+
+
+def _mod_dirs(p: dict, base: Path) -> list[Path]:
+    out = []
+    for m in p.get("mods") or []:
+        d = Path(__file__).resolve().parent / m if m in BUNDLED_MODS else expand(m, base)
+        if not (d / ".claude-plugin" / "plugin.json").exists():
+            raise HarnistError(tr("모드 플러그인 폴더가 아니다: {path}", path=tilde(d)))
+        out.append(d)
+    return out
 
 
 def _schema_obj(p: dict, base: Path):
@@ -2633,6 +2654,15 @@ def compile_profile(p: dict, vendor: str, base: Path, schema_path: Path | None =
             argv += ["--model", str(p["model"])]
         if p.get("effort"):
             argv += ["--effort", str(p["effort"])]
+        for d in _mod_dirs(p, base):
+            argv += ["--plugin-dir", str(d)]
+        if p.get("runtime"):
+            rt = expand(p["runtime"], base)
+            if not rt.exists():
+                raise HarnistError(tr("역할 설정 파일이 없다: {path}", path=tilde(rt)))
+            env["HARNIST_RUNTIME_CONFIG"] = str(rt)
+            if "agent" not in tools:
+                notes.append(tr("runtime 은 서브에이전트에만 작용한다 — tools 에 agent 가 없으면 효과가 없다"))
 
         shell = "shell" in tools
         if p["write"] == "none":
@@ -2664,6 +2694,11 @@ def compile_profile(p: dict, vendor: str, base: Path, schema_path: Path | None =
              else tr("세션과 자동 메모리가 남아 다음 자식에게 실린다"))
         prop("trace", p["trace"], "enforced" if p["trace"] else "none",
              tr("init 이벤트가 도구·플러그인·MCP·권한 모드를, 훅 이벤트가 훅 실행을 보여준다") if p["trace"] else "-")
+        if p.get("mods"):
+            prop("mods", p["mods"], "enforced", tr("--plugin-dir 로 이 자식에만 싣는다 — inherit 이 끊는 사용자 플러그인과 별개"))
+        if p.get("runtime"):
+            prop("runtime", p["runtime"], "approx",
+                 tr("runtime 모드가 HARNIST_RUNTIME_CONFIG 를 읽어 서브에이전트별로 깎는다 — 처음부터 실린 도구 설명은 못 숨기고 호출만 막는다"))
     elif vendor == "codex":
         argv = ["codex", "exec", "-s", "workspace-write" if p["write"] == "workspace" else "read-only"]
         if p["inherit"] == "project":
@@ -2717,6 +2752,10 @@ def compile_profile(p: dict, vendor: str, base: Path, schema_path: Path | None =
              else tr("세션과 자동 메모리가 남아 다음 자식에게 실린다"))
         prop("trace", p["trace"], "approx" if p["trace"] else "none",
              tr("--json 에는 init 이벤트가 없다 — 샌드박스·지침 파일·MCP 를 트레이스로 확인할 수 없다") if p["trace"] else "-")
+        if "agent" in tools:
+            notes.append(tr("codex exec 에는 서브에이전트 도구가 없다 — tools 의 agent 는 무시된다"))
+        if p.get("mods") or p.get("runtime"):
+            prop("mods", p.get("mods") or [], "none", tr("Codex 에는 모드가 없다 — mods·runtime 은 무시된다"))
     else:
         raise HarnistError(tr("--for 는 claude 또는 codex"))
     if p["output"] == "schema" and not p.get("schema"):
@@ -3539,6 +3578,16 @@ EN = {
     "profiles.{name}: shell_allow 가 있으면 tools 에 shell 이 있어야 한다": "profiles.{name}: shell_allow needs shell in tools",
     "profiles.{name}: 매핑이어야 한다": "profiles.{name}: must be a mapping",
     "profiles.{name}: 모르는 키 {keys}": "profiles.{name}: unknown keys {keys}",
+    "profiles.{name}.mods: 모드 이름·경로 목록이어야 한다": "profiles.{name}.mods: must be a list of mod names or paths",
+    "profiles.{name}.runtime: 역할 설정 JSON 경로여야 한다": "profiles.{name}.runtime: must be the path of a role config JSON",
+    "profiles.{name}: runtime 을 쓰려면 mods 에 runtime 이 있어야 한다": "profiles.{name}: runtime needs runtime in mods",
+    "모드 플러그인 폴더가 아니다: {path}": "not a mod plugin folder: {path}",
+    "역할 설정 파일이 없다: {path}": "role config file not found: {path}",
+    "runtime 은 서브에이전트에만 작용한다 — tools 에 agent 가 없으면 효과가 없다": "runtime only acts on subagents — without agent in tools it does nothing",
+    "codex exec 에는 서브에이전트 도구가 없다 — tools 의 agent 는 무시된다": "codex exec has no subagent tool — agent in tools is ignored",
+    "--plugin-dir 로 이 자식에만 싣는다 — inherit 이 끊는 사용자 플러그인과 별개": "loaded into this child only via --plugin-dir — separate from the user plugins inherit cuts",
+    "runtime 모드가 HARNIST_RUNTIME_CONFIG 를 읽어 서브에이전트별로 깎는다 — 처음부터 실린 도구 설명은 못 숨기고 호출만 막는다": "the runtime mod reads HARNIST_RUNTIME_CONFIG and trims per subagent — tool descriptions loaded up front can't be hidden, only their calls blocked",
+    "Codex 에는 모드가 없다 — mods·runtime 은 무시된다": "Codex has no mods — mods and runtime are ignored",
     "read-only 샌드박스에서는 셸 네트워크를 열 수 없다": "a read-only sandbox can't open shell network access",
     "result 는 마지막 텍스트 — Stop 훅의 block 이 바꿀 수 있다": "result is the last text — a Stop hook block can replace it",
     "schema 파일을 정하지 않아 최소 스키마({{done}})를 썼다 — 실제 작업에는 profiles.<이름>.schema 를 둔다": "no schema file set, so a minimal schema ({{done}}) was used — set profiles.<name>.schema for real work",

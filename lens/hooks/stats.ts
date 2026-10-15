@@ -150,7 +150,7 @@ export const digest = (id: string, rows: Row[]): SessionDigest | null => {
     } else if (r.kind === 'turn') {
       d.turns += 1
       turnMs += num(r.durationMs)
-    } else if (r.kind === 'attachment' && !r.replay) {
+    } else if (r.kind === 'attachment' && !r.replay && !r.agentId) {
       const origin = (r.origin ?? {}) as { kind?: string; event?: string }
       if (origin.kind === 'hook') {
         if (origin.event === 'SessionStart') d.hookStartChars += num(r.chars)
@@ -270,7 +270,7 @@ export const rebuild = (rows: Row[]): Rebuilt => {
       if (server) used.add(`mcp:${norm(server)}`)
     } else if (r.kind === 'skill') used.add(`skill:${str(r.skill)}`)
     else if (r.kind === 'agent') used.add(`agent:${str(r.type)}`)
-    else if (r.kind === 'attachment' && !r.replay) {
+    else if (r.kind === 'attachment' && !r.replay && !r.agentId) {
       const origin = (r.origin ?? {}) as { kind?: string; event?: string }
       if (origin.kind === 'hook' && origin.event === 'SessionStart') out.startHookChars += num(r.chars)
     } else if (r.kind === 'snapshot') {

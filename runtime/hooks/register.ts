@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import { parseConfig, roleFor, spawnDecision, toolBan, trimAttachment } from './rules'
 import type { Config } from './rules'
 
-// 설정: 레포의 .claude/harnist-runtime.json, 없으면 ~/.claude/harnist-runtime.json.
+// 설정: HARNIST_RUNTIME_CONFIG, 레포의 .claude/harnist-runtime.json, ~/.claude/harnist-runtime.json 순.
 // 메인 세션은 건드리지 않고, 서브에이전트만 종류(역할)별로 다르게 싣는다.
 let cfg: Config | undefined
 let cfgPath = ''
@@ -16,7 +16,10 @@ async function load($: EngineInterface) {
   cfg = undefined
   cfgError = ''
   const home = (await $.env.get('HOME')) ?? ''
-  for (const p of [`${await $.session.cwd()}/.claude/harnist-runtime.json`, `${home}/.claude/harnist-runtime.json`]) {
+  // 별도 프로세스 일꾼은 harnist profile 이 HARNIST_RUNTIME_CONFIG 로 자기 설정을 넘긴다
+  const given = (await $.env.get('HARNIST_RUNTIME_CONFIG')) ?? ''
+  const paths = [given, `${await $.session.cwd()}/.claude/harnist-runtime.json`, `${home}/.claude/harnist-runtime.json`]
+  for (const p of paths.filter(Boolean)) {
     if (!(await $.fs.exists(p))) continue
     cfgPath = p
     try {

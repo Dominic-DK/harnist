@@ -1,7 +1,9 @@
 {
   "name": "runtime",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "harnist runtime mod — per-role subagent loading: trims skill list, MCP notes and CLAUDE.md per subagent type, enforces spawn rules and tool bans",
-  "author": { "name": "Dominic Lee" },
+  "author": {
+    "name": "Dominic Lee"
+  },
   "license": "MIT"
 }

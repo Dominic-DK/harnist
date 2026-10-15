@@ -85,6 +85,19 @@ harnist 레포, sonnet 메인이 Explore(haiku)·general-purpose 를 하나씩 �
 - **비용은 캐시 상태가 지배한다.** 같은 서브에이전트를 자주 띄우면 깎지 않은 앞부분도 캐시 읽기(10% 가격)로 싸게 재사용된다. B 는 앞부분이 바뀌어 처음 한 번 캐시를 새로 썼다. 그래서 "역할 설정을 자주 바꾸지 않는다"가 운영 규칙이 된다 — 바꿀 때마다 그 역할의 캐시가 한 번 깨진다.
 - lens 의 `attachment` 기록에는 `agentId` 가 없어 서브에이전트별 주입 글자 수는 lens 로 못 본다. lens 에 `agentId` 를 붙이는 것이 다음 할 일이다.
 
+## 운영 규칙
+
+- **역할 규칙은 자주 바꾸지 않는다.** 바꿀 때마다 그 역할의 첫 요청 앞부분이 달라져 캐시를 한 번 새로 쓴다. 레포마다 한 번 정하고 둔다.
+- **메인 세션은 건드리지 않는다.** 런타임은 서브에이전트에만 작용하므로 메인의 캐시는 설정과 무관하게 안정적이다.
+- **고친 뒤 `/runtime` 으로 확인하고 `/runtime reload`.** 깨진 파일은 반쯤 적용되지 않고 런타임을 끈다.
+- **별도 프로세스 일꾼은 자기 파일을 받는다.** `HARNIST_RUNTIME_CONFIG` 가 레포 파일보다 우선한다.
+
+## 4. 프로세스 단위 조합 (2026-10-15)
+
+`profiles.<이름>` 에 `mods`(플러그인 폴더, `lens`·`runtime` 은 이름만), `runtime`(역할 설정 JSON 경로) 키를 더했다. claude 로 컴파일하면 `--plugin-dir` 와 `HARNIST_RUNTIME_CONFIG` 가 된다. 도구 목록에 `agent` 를 추가했다 — 없으면 일꾼이 서브에이전트를 못 띄워 runtime 이 무력하므로 compile 이 경고한다. Codex 는 모드가 없어 강제 불가.
+
+실측: `scout` 프로필(읽기 전용, `inherit: project`, `tools: [read, search, agent]`, `mods: [lens, runtime]`, Explore 는 스킬·MCP·CLAUDE.md 를 뺌)을 컴파일해 띄웠다. 사용자 플러그인이 끊긴 채 lens·runtime 만 실렸고, Explore 는 스킬 0개·CLAUDE.md 없음으로 동작했다. lens 는 주입 기록에 `agentId` 를 남기도록 고쳐(0.5.1), 이 실행에서 메인 6,446자·Explore 1,385자로 갈라 보였다. 집계(lens·harnist)는 훅 주입을 메인 기준으로만 센다.
+
 ## 열린 질문
 
 - ~~서브에이전트의 시스템 프롬프트·스킬 목록이 따로 거치는가~~ → 탐침 1: 주입만 따로, 섹션은 아님

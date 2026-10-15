@@ -902,6 +902,29 @@ class ProfileTest(Fixture):
         self.assertEqual(self.levels(c)["output"], "none")
         self.assertEqual(self.levels(c)["inherit"], "none")
 
+    def test_mods_and_runtime_compile_to_plugin_dirs_and_env(self):
+        rt = self.tmp / "roles.json"
+        rt.write_text('{"roles": {}}')
+        p = {**harnist.load_profiles(None)["review"], "mods": ["lens", "runtime"], "runtime": str(rt)}
+        harnist.validate_profile("review", p)
+        c = harnist.compile_profile(p, "claude", self.tmp)
+        dirs = [c["argv"][i + 1] for i, x in enumerate(c["argv"]) if x == "--plugin-dir"]
+        self.assertEqual([Path(d).name for d in dirs], ["lens", "runtime"])
+        self.assertEqual(c["env"]["HARNIST_RUNTIME_CONFIG"], str(rt))
+        self.assertEqual(self.levels(c)["mods"], "enforced")
+        self.assertEqual(self.levels(c)["runtime"], "approx")
+        self.assertEqual(self.levels(harnist.compile_profile(p, "codex", self.tmp))["mods"], "none")
+        self.assertTrue(any("agent" in n for n in c["notes"]))  # review 에는 agent 가 없어 runtime 이 무력하다
+        fan = harnist.compile_profile({**p, "tools": ["read", "search", "agent"]}, "claude", self.tmp)
+        self.assertIn("Agent", fan["argv"][fan["argv"].index("--tools") + 1].split(","))
+        self.assertFalse(any("agent" in n for n in fan["notes"]))
+        for bad, msg in [({"mods": "lens"}, "mods"), ({"mods": ["lens"], "runtime": "x.json"}, "runtime")]:
+            with self.assertRaises(harnist.HarnistError) as e:
+                harnist.validate_profile("x", {**harnist.load_profiles(None)["review"], **bad})
+            self.assertIn(msg, str(e.exception))
+        with self.assertRaises(harnist.HarnistError):
+            harnist.compile_profile({**p, "mods": [str(self.tmp)]}, "claude", self.tmp)  # 플러그인 폴더가 아니다
+
     def test_schema_file_resolved_relative_to_manifest(self):
         (self.repo / "s.json").write_text('{"type":"object","properties":{"ok":{"type":"boolean"}}}')
         p = {**harnist.load_profiles(None)["review"], "schema": "s.json"}

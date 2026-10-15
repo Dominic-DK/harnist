@@ -331,17 +331,19 @@ export const register: Register = on => {
 
   // 훅이 넣는 텍스트는 매 턴 드는 상시 비용이라 따로 센다
   on('prompt.attachment', async ($, e, next) => {
-    const ev = e as { type?: string; text?: string; origin?: { kind: string; event?: string } }
+    const ev = e as { type?: string; text?: string; agentId?: string; origin?: { kind: string; event?: string } }
     const chars = ev.text?.length ?? 0
+    // 서브에이전트에 실린 주입은 agentId 로 가른다 (메인은 비워 둔다)
+    const agent = ev.agentId ? { agentId: ev.agentId } : {}
     if (replaying) {
-      await rec($, 'attachment', { type: ev.type, origin: ev.origin, chars, replay: true })
+      await rec($, 'attachment', { type: ev.type, origin: ev.origin, chars, replay: true, ...agent })
       return next(e)
     }
-    if (ev.origin?.kind === 'hook') {
+    if (ev.origin?.kind === 'hook' && !ev.agentId) {
       if (ev.origin.event === 'SessionStart') await update($, startHookChars, n => n + chars)
       else turnHookChars += chars
     }
-    await rec($, 'attachment', { type: ev.type, origin: ev.origin, chars })
+    await rec($, 'attachment', { type: ev.type, origin: ev.origin, chars, ...agent })
     return next(e)
   })
 

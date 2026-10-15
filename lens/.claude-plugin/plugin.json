@@ -1,6 +1,6 @@
 {
   "name": "lens",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Langfuse-lite for Claude Code — records load, usage, cache hits, turn scores and cost per session; /lens pane and prompt line; lens-review skill",
   "types": "./types/index.d.ts",
   "author": {

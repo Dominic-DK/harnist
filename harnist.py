@@ -2878,13 +2878,18 @@ def judge_probe(p: dict, vendor: str, obs: dict, levels: dict | None = None) -> 
     init = obs["init"]
     if vendor == "claude" and init:
         if p["inherit"] == "project":
-            leaked = init["plugins"] + init["mcp"]
+            # 프로필이 mods 로 일부러 실은 모드(와 그 모드가 등록한 도구 서버)는 상속이 아니다
+            mine = [Path(m).name for m in p.get("mods") or []]
+            leaked = [x for x in init["plugins"] + init["mcp"] if not any(m in str(x) for m in mine)]
             row("inherit.plugins+mcp", [], leaked, "PASS" if not leaked else "FAIL")
             row("inherit.hooks", 0, obs["hooks"], "PASS" if obs["hooks"] == 0 else "FAIL")
             row("inherit.builtin_plugins", [], init["builtin_plugins"], "PASS" if not init["builtin_plugins"] else "gap")
         want = {t for k in (p.get("tools") or []) for t in CLAUDE_TOOLS[k]} | {"StructuredOutput"}
-        extra = sorted(set(init["tools"]) - want)
-        row("tools", sorted(want), extra or "=", "PASS" if not extra else "FAIL")
+        if "Agent" in want:
+            want.add("Task")  # init 이벤트는 Agent 도구를 옛 이름 Task 로 적는다
+        mine = [Path(m).name for m in p.get("mods") or []]  # 실은 모드가 등록한 도구 (mcp__<모드>__*)
+        extra = sorted(t for t in set(init["tools"]) - want if not any(t.startswith(f"mcp__{m}__") for m in mine))
+        row("tools", sorted(want - {"Task"}), extra or "=", "PASS" if not extra else "FAIL")
     elif vendor == "claude":
         row("init", "present", None, "FAIL")
     else:

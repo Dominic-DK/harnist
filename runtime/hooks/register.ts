@@ -112,7 +112,8 @@ export const register: Register = on => {
     s.before += ev.text.length
     s.after += text?.length ?? 0
     s.n++
-    return { text }
+    // 깎은 텍스트는 아래 플러그인(lens 등)도 보게 넘긴다. 통째로 뺄 때만 여기서 끝낸다
+    return text === null ? { text: null } : next({ ...e, text })
   })
 
   on('tool.check', async ($, e, next) => {

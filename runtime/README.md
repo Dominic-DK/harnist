@@ -35,4 +35,8 @@ Put it at `<repo>/.claude/harnist-runtime.json` (or `~/.claude/harnist-runtime.j
 
 Config lookup order: `HARNIST_RUNTIME_CONFIG`, `<repo>/.claude/harnist-runtime.json`, `~/.claude/harnist-runtime.json`.
 
+## Does it help?
+
+`python3 runtime/eval/run.py --reps 3` runs the same seven-subagent task with and without the mod, alternating, and judges from traces and lens records rather than the model's own report. On this repo (sonnet main, 3 runs each): subagent first requests shrank 28% (Explore) and 32% (general-purpose), all 15 answers stayed correct, and the Bash ban and Plan ban held 3/3. Cost per run fell from $0.157 to $0.105 on average, but runs vary widely with cache state, so read the context saving as the dependable part. Details in the design notes.
+
 Install: `/plugin install runtime@harnist`. Design notes and measurements: [`docs/design/mods-runtime.md`](../docs/design/mods-runtime.md).

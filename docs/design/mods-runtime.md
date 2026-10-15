@@ -98,6 +98,31 @@ harnist 레포, sonnet 메인이 Explore(haiku)·general-purpose 를 하나씩 �
 
 실측: `scout` 프로필(읽기 전용, `inherit: project`, `tools: [read, search, agent]`, `mods: [lens, runtime]`, Explore 는 스킬·MCP·CLAUDE.md 를 뺌)을 컴파일해 띄웠다. 사용자 플러그인이 끊긴 채 lens·runtime 만 실렸고, Explore 는 스킬 0개·CLAUDE.md 없음으로 동작했다. lens 는 주입 기록에 `agentId` 를 남기도록 고쳐(0.5.1), 이 실행에서 메인 6,446자·Explore 1,385자로 갈라 보였다. 집계(lens·harnist)는 훅 주입을 메인 기준으로만 센다.
 
+## 효과 평가 (2026-10-15, `runtime/eval/run.py`)
+
+harnist 탐침처럼 자기보고 없이 증거로 판정한다. 같은 과제를 런타임 없이(A)·켜고(B) 번갈아 3번씩, sonnet 메인으로 harnist 레포에서 돌렸다. 과제는 서브에이전트 7개(Explore 3·general-purpose 3·Plan 1)이고 정답은 스크립트가 레포에서 계산한다. 증거는 stream-json 트레이스와 lens 기록(서브에이전트별 주입·첫 요청·생성 거부)이다. 설정은 Explore 가 스킬·MCP·CLAUDE.md 없음 + Bash 금지, general-purpose 가 `memory-bank:*` 스킬·레포 CLAUDE.md 만, Plan 생성 금지.
+
+| 지표 (3회 평균) | A | B |
+| --- | --- | --- |
+| 메인 첫 요청 | 27,916 | 27,916 |
+| Explore 첫 요청 | 13,142 | **9,427 (−28%)** |
+| general-purpose 첫 요청 | 19,016 | **12,859 (−32%)** |
+| general-purpose 스킬 목록 / CLAUDE.md (자) | 6,931 / 5,269 | 1,129 / 832 |
+| Plan 첫 요청 | 13,245 | 0 (거부) |
+| 실행당 비용 | $0.157 | $0.105 |
+| 실행당 시간 | 54s | 51s |
+| 정답 (과제 5개 × 3회) | 15/15 | 15/15 |
+| Explore Bash 런타임 거부 | 0/3 | 3/3 |
+| Plan 생성 런타임 거부 | 0/3 | 3/3 |
+
+- **정확도 손실 없음.** 깎은 뒤에도 과제 5개를 모두 맞혔다. 허용한 스킬(`memory-bank:search-conversations`)과 레포 규칙(테스트 명령)은 남아서 필요한 답을 냈다.
+- **강제는 3/3.** Bash·Plan 거부는 트레이스의 런타임 사유 문자열로 확인했다.
+- **비용은 신중히 읽는다.** 실행마다 캐시 상태가 달라 편차가 크다(A $0.085–0.235, B $0.072–0.147). 가장 데워진 3회차끼리는 $0.085 → $0.072 (−15%)이고, 이 차이에는 거부된 Plan 한 번(13k 토큰)이 섞여 있다. 확실한 이득은 서브에이전트 컨텍스트 28–32% 감소다.
+- **이 평가가 못 보인 것.** s4(Explore 에게 레포 규칙 묻기)는 트레이드오프를 보이려던 과제였는데, Explore 는 원래도 CLAUDE.md 를 받지 않고 파일을 직접 읽어 맞혔다. 깎은 맥락 때문에 틀리는 경우는 이 과제 묶음에서 나오지 않았다 — 스킬을 빼 버린 역할에 그 스킬이 필요한 일을 맡기는 과제를 더하는 것이 다음 평가 거리다.
+- **평가 중 고친 것.** 런타임이 깎은 주입을 아래 플러그인에 넘기지 않아 lens 가 못 보던 문제(runtime 0.2.0), lens 가 들어온 텍스트가 아니라 모델이 읽는 최종 텍스트를 세도록(lens 0.5.1), 생성 기록에 `agentId`·거부 사유를 남기도록 했다. `profile probe` 는 프로필이 실은 모드·그 모드의 도구·`Task`(Agent 의 옛 이름)를 상속·넘친 도구로 오판하던 것을 고쳤다.
+
+재현: `python3 runtime/eval/run.py --reps 3` (원본은 `~/.cache/harnist-runtime-eval/`).
+
 ## 열린 질문
 
 - ~~서브에이전트의 시스템 프롬프트·스킬 목록이 따로 거치는가~~ → 탐침 1: 주입만 따로, 섹션은 아님

@@ -332,19 +332,21 @@ export const register: Register = on => {
   // 훅이 넣는 텍스트는 매 턴 드는 상시 비용이라 따로 센다
   on('prompt.attachment', async ($, e, next) => {
     const ev = e as { type?: string; text?: string; agentId?: string; origin?: { kind: string; event?: string } }
-    const chars = ev.text?.length ?? 0
+    // 아래 플러그인이 바꾼 뒤의, 모델이 실제로 읽는 텍스트로 센다 (null 이면 빠진 주입)
+    const out = await next(e)
+    const chars = out.text?.length ?? 0
     // 서브에이전트에 실린 주입은 agentId 로 가른다 (메인은 비워 둔다)
     const agent = ev.agentId ? { agentId: ev.agentId } : {}
     if (replaying) {
       await rec($, 'attachment', { type: ev.type, origin: ev.origin, chars, replay: true, ...agent })
-      return next(e)
+      return out
     }
     if (ev.origin?.kind === 'hook' && !ev.agentId) {
       if (ev.origin.event === 'SessionStart') await update($, startHookChars, n => n + chars)
       else turnHookChars += chars
     }
     await rec($, 'attachment', { type: ev.type, origin: ev.origin, chars, ...agent })
-    return next(e)
+    return out
   })
 
   on('skill.prompt', async ($, e, next) => {
@@ -355,8 +357,13 @@ export const register: Register = on => {
 
   on('agent.spawn', async ($, e, next) => {
     await markUsed($, `agent:${e.subagentType}`)
-    await rec($, 'agent', { type: e.subagentType, model: e.model, background: e.background, fork: e.fork })
-    return next(e)
+    const r = await next(e)
+    // agentId 로 이 서브에이전트의 주입·요청을 종류와 잇는다. 플러그인이 막았으면 사유를 남긴다
+    await rec($, 'agent', {
+      type: e.subagentType, model: r.model ?? e.model, background: e.background, fork: e.fork,
+      ...(r.agentId ? { agentId: r.agentId } : {}), ...(r.deny ? { deny: r.deny } : {}),
+    })
+    return r
   }).catch(($, e, next) => next(e))
 
   // 권한을 물었는지·거부됐는지만 센다. 판정은 그대로 둔다

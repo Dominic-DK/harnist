@@ -925,6 +925,22 @@ class ProfileTest(Fixture):
         with self.assertRaises(harnist.HarnistError):
             harnist.compile_profile({**p, "mods": [str(self.tmp)]}, "claude", self.tmp)  # 플러그인 폴더가 아니다
 
+    def test_probe_does_not_count_declared_mods_as_inherited(self):
+        p = {**harnist.load_profiles(None)["review"], "mods": ["lens"]}
+        obs = {"inside": [], "outside": False, "http": None, "hooks": 0, "shell_calls": 0, "denials": 0,
+               "init": {"tools": ["Read", "Glob", "Grep", "StructuredOutput"], "mcp": ["plugin:lens:lens"],
+                        "plugins": ["lens"], "builtin_plugins": [], "permission_mode": "dontAsk"}}
+        v = {r["prop"]: r["verdict"] for r in harnist.judge_probe(p, "claude", obs)}
+        self.assertEqual(v["inherit.plugins+mcp"], "PASS")
+        self.assertEqual(v["tools"], "PASS")
+        obs["init"]["tools"] += ["Task", "mcp__lens__report"]
+        p["tools"] = ["read", "search", "agent"]
+        v = {r["prop"]: r["verdict"] for r in harnist.judge_probe(p, "claude", obs)}
+        self.assertEqual(v["tools"], "PASS")  # Agent 의 옛 이름과 실은 모드의 도구는 넘친 도구가 아니다
+        obs["init"]["plugins"].append("korean-guard")
+        v = {r["prop"]: r["verdict"] for r in harnist.judge_probe(p, "claude", obs)}
+        self.assertEqual(v["inherit.plugins+mcp"], "FAIL")
+
     def test_schema_file_resolved_relative_to_manifest(self):
         (self.repo / "s.json").write_text('{"type":"object","properties":{"ok":{"type":"boolean"}}}')
         p = {**harnist.load_profiles(None)["review"], "schema": "s.json"}

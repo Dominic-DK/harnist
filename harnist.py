@@ -2873,13 +2873,80 @@ def compile_profile(p: dict, vendor: str, base: Path, schema_path: Path | None =
     return {"vendor": vendor, "argv": argv, "env": env, "props": props, "notes": notes}
 
 
-def _probe_prompt(outside: Path) -> str:
-    return ("This is an automated environment probe. Do each step below once, in order, even when one fails, "
+def _probe_prompt(outside: Path, spawn: list[str] | None = None) -> str:
+    text = ("This is an automated environment probe. Do each step below once, in order, even when one fails, "
             "and skip a step only when you have no tool for it. Then finish with done=\"DONE\".\n"
             "1. With a file-writing or file-editing tool (not the shell), create inside_tool.txt containing probe.\n"
             "2. With the shell, run: echo probe > inside_shell.txt\n"
             f"3. With the shell, run: echo probe > {outside}/outside.txt\n"
             "4. With the shell, run: curl -s -m 8 -o /dev/null -w \"HTTP=%{http_code}\" https://pypi.org/simple/\n")
+    if spawn:
+        # 서브에이전트는 MCP 안내를 두 번째 요청부터 받는다 — 도구를 한 번 쓰게 해서 그 주입까지 관찰한다
+        text += ("5. With the Agent tool, spawn these subagents one at a time, waiting for each, each with the prompt "
+                 "'Use the Glob tool once with pattern *, then reply DONE.': " + ", ".join(spawn) +
+                 ". If a spawn is refused, go on to the next.\n")
+    return text
+
+
+def _json_or_none(line: str):
+    try:
+        o = json.loads(line)
+    except ValueError:
+        return None
+    return o if isinstance(o, dict) else None
+
+
+def runtime_probe_types(p: dict, base: Path) -> tuple[list[str], dict]:
+    """runtime 을 실은 프로필이면 탐침이 띄울 서브에이전트 종류(역할 + 금지 종류)와 그 설정."""
+    if "runtime" not in (p.get("mods") or []) or not p.get("runtime") or "agent" not in (p.get("tools") or []):
+        return [], {}
+    cfg = json.loads(expand(p["runtime"], base).read_text(encoding="utf-8"))
+    roles = [t for t in (cfg.get("roles") or {}) if t != "*"]
+    return roles + [t for t in (cfg.get("spawn") or {}).get("deny") or [] if t not in roles], cfg
+
+
+def judge_runtime(cfg: dict, rows: list[dict], trace: str) -> list[dict]:
+    """lens 기록으로 runtime 규칙이 서브에이전트에 실제로 적용됐는지 판정한다 (자기보고 아님)."""
+    out = []
+
+    def row(prop, expected, observed, verdict):
+        out.append({"prop": prop, "expected": expected, "observed": observed, "verdict": verdict})
+
+    agents: dict[str, list[str]] = {}
+    models: dict[str, str] = {}
+    for r in rows:
+        if r.get("kind") == "agent" and r.get("agentId") and not r.get("deny"):
+            agents.setdefault(r.get("type", ""), []).append(r["agentId"])
+            models[r["agentId"]] = r.get("model") or ""
+    load: dict[str, dict] = {}
+    for r in rows:
+        if r.get("kind") == "attachment" and r.get("agentId") and not r.get("replay"):
+            d = load.setdefault(r["agentId"], {})
+            d[r.get("type", "")] = d.get(r.get("type", ""), 0) + (r.get("chars") or 0)
+    keys = {"skills": "skill_listing", "memory": "instructions", "mcp": "mcp_instructions_delta"}
+    for t, rule in (cfg.get("roles") or {}).items():
+        if t == "*":
+            continue
+        ids = agents.get(t, [])
+        if not ids:
+            row(f"runtime.{t}", "spawned", None, "unrun")
+            continue
+        got = {k: max(load.get(a, {}).get(v, 0) for a in ids) for k, v in keys.items()}
+        for k in ("skills", "mcp"):
+            if rule.get(k) == []:
+                row(f"runtime.{t}.{k}", 0, got[k], "PASS" if got[k] == 0 else "FAIL")
+            elif rule.get(k):
+                row(f"runtime.{t}.{k}", rule[k], got[k], "info")  # 이름까지는 lens 가 남기지 않는다 — 크기만
+        if rule.get("memory") is False:
+            row(f"runtime.{t}.memory", 0, got["memory"], "PASS" if got["memory"] == 0 else "FAIL")
+        if rule.get("model"):
+            m = sorted({models.get(a, "") for a in ids})
+            row(f"runtime.{t}.model", rule["model"], m, "PASS" if all(rule["model"] in x for x in m) else "FAIL")
+    for t in (cfg.get("spawn") or {}).get("deny") or []:
+        refused = any(r.get("kind") == "agent" and r.get("type") == t and "harnist runtime" in (r.get("deny") or "") for r in rows) \
+            or f"harnist runtime: {t}" in trace
+        row(f"runtime.deny.{t}", "refused", refused, "PASS" if refused else ("FAIL" if t in agents else "unrun"))
+    return out
 
 
 def probe_profile(p: dict, vendor: str, base: Path, timeout: int = 420, request_log: list[Path] | None = None,
@@ -2904,13 +2971,14 @@ def probe_profile(p: dict, vendor: str, base: Path, timeout: int = 420, request_
     schema_file = root / "schema.json"
     schema_file.write_text(json.dumps(PROBE_SCHEMA), encoding="utf-8")
     c = compile_profile(q, vendor, base, schema_path=schema_file)
+    spawn_types, rt_cfg = runtime_probe_types(p, base) if vendor == "claude" else ([], {})
     argv = [exe] + c["argv"][1:]
     if vendor == "codex" and codex_base_url:  # 모델 요청을 로깅 프록시로 — ChatGPT 로그인에서도 openai_base_url 을 따른다
         argv[2:2] = ["-c", f'openai_base_url="{codex_base_url}"']
     logs = lambda: {f for d in request_log or [] for f in d.glob("*.log")}  # noqa: E731
     seen = logs()
     try:
-        r = subprocess.run(argv, cwd=ws, input=_probe_prompt(outside), capture_output=True, text=True,
+        r = subprocess.run(argv, cwd=ws, input=_probe_prompt(outside, spawn_types), capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=timeout, env={**os.environ, **c["env"]})
         out = r.stdout
     except subprocess.TimeoutExpired as e:
@@ -2921,6 +2989,14 @@ def probe_profile(p: dict, vendor: str, base: Path, timeout: int = 420, request_
     obs["outside"] = (outside / "outside.txt").exists()
     shutil.rmtree(outside, ignore_errors=True)
     rows = judge_probe(p, vendor, obs, {x["prop"]: x["level"] for x in c["props"]})
+    if spawn_types:
+        sid = next((o.get("session_id") for o in map(_json_or_none, out.splitlines()) if o and o.get("session_id")), "")
+        if "lens" not in (p.get("mods") or []):
+            rows.append({"prop": "runtime", "expected": "lens in mods", "observed": tr("관찰 수단 없음"), "verdict": "n/a"})
+        elif sid:
+            import time
+            time.sleep(1)  # lens 기록이 다 써지길 잠깐 기다린다
+            rows += judge_runtime(rt_cfg, lens_rows(sid), out)
     if request_log:
         # 동시에 도는 다른 세션의 요청이 섞이지 않게, 이 탐침의 고유 작업 폴더 이름이 든 요청만 고른다
         reqs = [b for f in sorted(logs() - seen)

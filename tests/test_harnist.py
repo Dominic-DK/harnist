@@ -1002,6 +1002,29 @@ class ProfileTest(Fixture):
         v = {r["prop"]: r["verdict"] for r in harnist.judge_probe(p, "claude", obs)}
         self.assertEqual(v["inherit.plugins+mcp"], "FAIL")
 
+    def test_runtime_probe_judges_from_lens_records(self):
+        cfg = {"spawn": {"deny": ["Plan"]},
+               "roles": {"Explore": {"skills": [], "mcp": [], "memory": False, "model": "haiku"},
+                         "general-purpose": {"skills": ["memory-bank:*"]}}}
+        rt = self.tmp / "roles.json"
+        rt.write_text(json.dumps(cfg))
+        p = {**harnist.load_profiles(None)["review"], "tools": ["read", "search", "agent"], "mods": ["lens", "runtime"], "runtime": str(rt)}
+        types, got = harnist.runtime_probe_types(p, self.tmp)
+        self.assertEqual(types, ["Explore", "general-purpose", "Plan"])
+        self.assertIn("Explore, general-purpose, Plan", harnist._probe_prompt(self.tmp, types))
+        rows = [{"kind": "agent", "type": "Explore", "agentId": "e", "model": "claude-haiku-5-5"},
+                {"kind": "agent", "type": "general-purpose", "agentId": "g", "model": "claude-sonnet-5-5"},
+                {"kind": "agent", "type": "Plan", "deny": "Subagent spawn denied by a plugin: harnist runtime: Plan ..."},
+                {"kind": "attachment", "type": "deferred_tools_delta", "chars": 461, "agentId": "e"},
+                {"kind": "attachment", "type": "skill_listing", "chars": 1129, "agentId": "g"}]
+        v = {r["prop"]: r["verdict"] for r in harnist.judge_runtime(got, rows, "")}
+        self.assertEqual(v, {"runtime.Explore.skills": "PASS", "runtime.Explore.mcp": "PASS", "runtime.Explore.memory": "PASS",
+                             "runtime.Explore.model": "PASS", "runtime.general-purpose.skills": "info", "runtime.deny.Plan": "PASS"})
+        rows[3:3] = [{"kind": "attachment", "type": "skill_listing", "chars": 6931, "agentId": "e"}]
+        v = {r["prop"]: r["verdict"] for r in harnist.judge_runtime(got, rows, "")}
+        self.assertEqual(v["runtime.Explore.skills"], "FAIL")  # 깎였어야 할 목록이 실렸다
+        self.assertEqual(harnist.runtime_probe_types({**p, "tools": ["read"]}, self.tmp), ([], {}))  # agent 없으면 탐침 안 함
+
     def test_schema_file_resolved_relative_to_manifest(self):
         (self.repo / "s.json").write_text('{"type":"object","properties":{"ok":{"type":"boolean"}}}')
         p = {**harnist.load_profiles(None)["review"], "schema": "s.json"}

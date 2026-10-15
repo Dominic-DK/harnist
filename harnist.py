@@ -283,6 +283,62 @@ def marketplace_commit(name: str) -> str | None:
     return r.stdout.strip() or None
 
 
+ROLE_KEYS = {"model", "skills", "mcp", "memory", "deny_tools"}
+RUNTIME_FILE = "harnist-runtime.json"
+RUNTIME_PLUGIN = {"enabledPlugins": {"runtime@harnist": True},
+                  "extraKnownMarketplaces": {"harnist": {"source": {"source": "github", "repo": "Dominic-DK/harnist"}}}}
+
+
+def merge_roles(dst: dict, src, origin: str) -> None:
+    """roles: 서브에이전트 종류 → 그 역할에 필요한 것. 모듈·매니페스트 선언을 합친다(목록은 합집합, 모델은 충돌 금지).
+    memory 는 true(전부 유지) > 경로 목록(합집합) > false(뺌) 순으로 넓은 쪽을 따른다 — 누군가 필요하다고 한 것은 남긴다."""
+    if src is None:
+        return
+    if not isinstance(src, dict):
+        raise HarnistError(tr("{origin}: roles 는 서브에이전트 종류 → 규칙 매핑이어야 한다", origin=origin))
+    for t, r in src.items():
+        if not isinstance(r, dict):
+            raise HarnistError(tr("{origin}: roles.{role} 는 매핑이어야 한다", origin=origin, role=t))
+        bad = sorted(set(r) - ROLE_KEYS)
+        if bad:
+            raise HarnistError(tr("{origin}: roles.{role} 모르는 키 {keys}", origin=origin, role=t, keys=", ".join(bad)))
+        d = dst.setdefault(t, {})
+        for k in ("skills", "mcp", "deny_tools"):
+            if k in r:
+                if not isinstance(r[k], list) or not all(isinstance(x, str) for x in r[k]):
+                    raise HarnistError(tr("{origin}: roles.{role}.{key} 는 문자열 목록이어야 한다", origin=origin, role=t, key=k))
+                d[k] = sorted(set(d.get(k, [])) | set(r[k]))
+        if "memory" in r:
+            v, cur = r["memory"], d.get("memory")
+            if not (isinstance(v, bool) or (isinstance(v, list) and all(isinstance(x, str) for x in v))):
+                raise HarnistError(tr("{origin}: roles.{role}.memory 는 true·false 또는 경로 조각 목록", origin=origin, role=t))
+            if v is True or cur is True:
+                d["memory"] = True
+            elif isinstance(v, list) or isinstance(cur, list):
+                d["memory"] = sorted(set(v if isinstance(v, list) else []) | set(cur if isinstance(cur, list) else []))
+            else:
+                d["memory"] = False
+        if "model" in r:
+            if d.get("model") not in (None, r["model"]):
+                raise HarnistError(tr("roles.{role}.model 충돌: {a} ↔ {b} ({origin})", role=t, a=d["model"], b=r["model"], origin=origin))
+            d["model"] = r["model"]
+
+
+def runtime_config(roles: dict, spawn: dict) -> dict | None:
+    """runtime 모드 설정 — roles 나 spawn.deny 가 있을 때만 만든다(기존 레포의 동작을 바꾸지 않는다)."""
+    if not roles and not spawn.get("deny"):
+        return None
+    sp = {}
+    if spawn.get("max_parallel_agents"):
+        sp["maxConcurrent"] = int(spawn["max_parallel_agents"])
+    if spawn.get("deny"):
+        sp["deny"] = list(spawn["deny"])
+    out = {}
+    for t, r in roles.items():
+        out[t] = {("denyTools" if k == "deny_tools" else k): v for k, v in r.items()}
+    return {"spawn": sp, "roles": out}
+
+
 def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
     manifest_path = manifest_path.resolve()
     man = load_yaml(manifest_path)
@@ -315,6 +371,7 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
     skills: set[str] = set()
     fragments: list[tuple[Module, str]] = []
     lock_mods: dict = {}
+    roles: dict = {}
 
     def emit(rel: str, data: bytes, origin: str) -> None:
         if rel in providers:
@@ -361,6 +418,7 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
             deep_merge(settings, spec["settings"], m.name, owners)
         if spec.get("claude_md"):
             fragments.append((m, spec["claude_md"].strip()))
+        merge_roles(roles, spec.get("roles"), m.name)
         lock_mods[m.name] = {"layer": m.layer, "hash": h.hexdigest()}
 
     # 프로젝트 계층: spawn·teams·overrides
@@ -379,6 +437,12 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
     if ov.get("settings"):
         deep_merge(settings, ov["settings"], "overrides", owners, override=True)
     mcp.update(ov.get("mcp") or {})
+    merge_roles(roles, man.get("roles"), "harness.yaml")
+    rt = runtime_config(roles, spawn)
+    if rt:
+        plan.files[f"{cd}{RUNTIME_FILE}"] = (json.dumps(rt, ensure_ascii=False, indent=2) + "\n").encode()
+        if scope == "project":
+            deep_merge(settings, RUNTIME_PLUGIN, "roles", owners)
 
     if scope == "user" and (settings or mcp):
         raise HarnistError(tr(
@@ -389,7 +453,7 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
         plan.files[".mcp.json"] = (json.dumps({"mcpServers": mcp}, ensure_ascii=False, indent=2) + "\n").encode()
 
     local_md = expand(ov["claude_md"], base).read_text().strip() if ov.get("claude_md") else ""
-    plan.block = render_block(mods, fragments, spawn, teams, local_md)
+    plan.block = render_block(mods, fragments, spawn, teams, local_md, rt)
     mirrors = man.get("mirror") or []
     for f in mirrors:
         if "/" in f or not f.endswith(".md") or f == "CLAUDE.md":
@@ -408,7 +472,7 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
     return plan
 
 
-def render_block(mods, fragments, spawn, teams, local_md) -> str:
+def render_block(mods, fragments, spawn, teams, local_md, rt: dict | None = None) -> str:
     out = [
         BEGIN,
         tr("<!-- 생성물: harness.yaml 을 고치고 `harnist generate` 로 재생성한다. 직접 고치면 check 가 드리프트로 잡는다. -->"),
@@ -442,6 +506,30 @@ def render_block(mods, fragments, spawn, teams, local_md) -> str:
         if spawn.get("rules"):
             out.append("")
             out += [f"- {r}" for r in spawn["rules"]]
+    if rt:
+        out += ["", tr("### 역할별 서브에이전트 (runtime 모드가 강제)"), ""]
+        if rt["spawn"]:
+            bits = []
+            if rt["spawn"].get("maxConcurrent"):
+                bits.append(tr("동시 {n}개", n=rt["spawn"]["maxConcurrent"]))
+            if rt["spawn"].get("deny"):
+                bits.append(tr("금지 {types}", types=", ".join(rt["spawn"]["deny"])))
+            out.append(tr("생성: {rules}", rules=" · ".join(bits)))
+        for t, r in rt["roles"].items():
+            bits = []
+            if "skills" in r:
+                bits.append(tr("스킬 {v}", v=", ".join(r["skills"]) or tr("없음")))
+            if "mcp" in r:
+                bits.append("MCP " + (", ".join(r["mcp"]) or tr("없음")))
+            if "memory" in r:
+                m = r["memory"]
+                bits.append("CLAUDE.md " + (tr("유지") if m is True else tr("뺌") if m is False else ", ".join(m)))
+            if r.get("denyTools"):
+                bits.append(tr("금지 도구 {v}", v=", ".join(r["denyTools"])))
+            if r.get("model"):
+                bits.append(tr("모델 {v}", v=r["model"]))
+            out.append(f"- `{t}`: " + " · ".join(bits))
+        out.append(tr("뺀 것은 그 역할이 모른다고 답한다. 꼭 필요한 스킬은 서브에이전트 프롬프트에 이름을 적으면 불러올 수 있다."))
     if local_md:
         out += ["", tr("### 이 레포 고유"), "", local_md]
     out.append(END)
@@ -3583,6 +3671,23 @@ EN = {
     "profiles.{name}: shell_allow 가 있으면 tools 에 shell 이 있어야 한다": "profiles.{name}: shell_allow needs shell in tools",
     "profiles.{name}: 매핑이어야 한다": "profiles.{name}: must be a mapping",
     "profiles.{name}: 모르는 키 {keys}": "profiles.{name}: unknown keys {keys}",
+    "{origin}: roles 는 서브에이전트 종류 → 규칙 매핑이어야 한다": "{origin}: roles must map subagent types to rules",
+    "{origin}: roles.{role} 는 매핑이어야 한다": "{origin}: roles.{role} must be a mapping",
+    "{origin}: roles.{role} 모르는 키 {keys}": "{origin}: roles.{role} unknown keys {keys}",
+    "{origin}: roles.{role}.{key} 는 문자열 목록이어야 한다": "{origin}: roles.{role}.{key} must be a list of strings",
+    "{origin}: roles.{role}.memory 는 true·false 또는 경로 조각 목록": "{origin}: roles.{role}.memory must be true, false or a list of path fragments",
+    "roles.{role}.model 충돌: {a} ↔ {b} ({origin})": "roles.{role}.model conflict: {a} ↔ {b} ({origin})",
+    "### 역할별 서브에이전트 (runtime 모드가 강제)": "### Subagents by role (enforced by the runtime mod)",
+    "동시 {n}개": "at most {n} at once",
+    "금지 {types}": "banned {types}",
+    "생성: {rules}": "Spawn: {rules}",
+    "스킬 {v}": "skills {v}",
+    "없음": "none",
+    "유지": "kept",
+    "뺌": "dropped",
+    "금지 도구 {v}": "banned tools {v}",
+    "모델 {v}": "model {v}",
+    "뺀 것은 그 역할이 모른다고 답한다. 꼭 필요한 스킬은 서브에이전트 프롬프트에 이름을 적으면 불러올 수 있다.": "A role answers that it doesn't know what was cut. A needed skill still loads when the subagent's prompt names it.",
     "profiles.{name}.mods: 모드 이름·경로 목록이어야 한다": "profiles.{name}.mods: must be a list of mod names or paths",
     "profiles.{name}.runtime: 역할 설정 JSON 경로여야 한다": "profiles.{name}.runtime: must be the path of a role config JSON",
     "profiles.{name}: runtime 을 쓰려면 mods 에 runtime 이 있어야 한다": "profiles.{name}: runtime needs runtime in mods",

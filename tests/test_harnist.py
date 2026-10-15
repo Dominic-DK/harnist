@@ -121,6 +121,50 @@ class ResolveTest(Fixture):
         self.assertIn("user 스코프는", out)
 
 
+    def test_roles_generate_runtime_config_and_enable_plugin(self):
+        write(self.tmp / "registry/domain/alpha/module.yaml", f"""
+            layer: domain
+            requires: [base/core]
+            source: {self.src}
+            skills: [alpha]
+            agents: [worker]
+            roles:
+              general-purpose: {{skills: [alpha], memory: [/repo/CLAUDE.md]}}
+            """)
+        self.manifest({"modules": ["domain/alpha"], "spawn": {"max_parallel_agents": 3, "deny": ["Plan"]},
+                       "roles": {"Explore": {"skills": [], "mcp": [], "memory": False, "deny_tools": ["Bash"], "model": "haiku"},
+                                 "general-purpose": {"skills": ["memory-bank:*"], "mcp": []}}})
+        rc, out = self.run_cli("generate")
+        self.assertEqual(rc, 0, out)
+        rt = json.loads((self.repo / ".claude/harnist-runtime.json").read_text())
+        self.assertEqual(rt["spawn"], {"maxConcurrent": 3, "deny": ["Plan"]})
+        self.assertEqual(rt["roles"]["Explore"], {"skills": [], "mcp": [], "memory": False, "denyTools": ["Bash"], "model": "haiku"})
+        gp = rt["roles"]["general-purpose"]
+        self.assertEqual(gp["skills"], ["alpha", "memory-bank:*"])  # 모듈이 필요하다고 한 스킬이 합쳐진다
+        self.assertEqual(gp["memory"], ["/repo/CLAUDE.md"])
+        st = json.loads((self.repo / ".claude/settings.json").read_text())
+        self.assertTrue(st["enabledPlugins"]["runtime@harnist"])
+        md = (self.repo / "CLAUDE.md").read_text()
+        self.assertIn("runtime 모드가 강제", md)
+        self.assertIn("`Explore`", md)
+        rc, out = self.run_cli("check")
+        self.assertEqual(rc, 0, out)  # 생성물이 드리프트 검사에 잡힌다
+
+    def test_roles_merge_rules_and_errors(self):
+        r = {}
+        harnist.merge_roles(r, {"x": {"memory": False, "model": "haiku"}}, "a")
+        harnist.merge_roles(r, {"x": {"memory": ["/a"]}}, "b")
+        self.assertEqual(r["x"]["memory"], ["/a"])  # 누군가 필요하다고 한 파일은 남는다
+        harnist.merge_roles(r, {"x": {"memory": True}}, "c")
+        self.assertIs(r["x"]["memory"], True)
+        with self.assertRaises(harnist.HarnistError):
+            harnist.merge_roles(r, {"x": {"model": "opus"}}, "d")  # 모델 충돌
+        for bad in ({"x": {"color": 1}}, {"x": {"skills": "a"}}, {"x": {"memory": "a"}}, {"x": 3}):
+            with self.assertRaises(harnist.HarnistError):
+                harnist.merge_roles({}, bad, "e")
+        self.assertIsNone(harnist.runtime_config({}, {"max_parallel_agents": 3}))  # roles 없으면 기존 레포 동작 그대로
+
+
 class DriftTest(Fixture):
     def setUp(self):
         super().setUp()

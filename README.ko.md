@@ -182,6 +182,23 @@ profiles:
 
 Codex도 같은 방식으로 확인할 수 있습니다. `--codex-base-url URL`을 주면 탐침이 `-c openai_base_url=…`을 붙입니다. ChatGPT 로그인 모드에서도 이 주소를 따릅니다. 이렇게 하면 모델이 받은 권한 지시에 적힌 `sandbox_mode`가 선언과 맞는지(`prompt.sandbox`), 사용자 스킬과 MCP가 실렸는지(`prompt.user_skills`, `prompt.user_mcp`)를 판정합니다. 그런데 `--ignore-user-config`만으로는 `~/.agents/skills`가 계속 실렸습니다. 그래서 `inherit: project`는 `-c skills.include_instructions=false`를 함께 냅니다.
 
+### 역할별 서브에이전트 — runtime 모드
+
+서브에이전트는 원래 메인 세션과 같은 스킬 목록·MCP 안내·CLAUDE.md를 받습니다. `roles:`는 서브에이전트 종류마다 실제로 필요한 것을 적습니다. 그러면 [runtime 모드](runtime/README.md)가 서브에이전트마다 나머지를 깎고, 금지한 생성은 거부하고, 금지한 도구는 막습니다.
+
+```yaml
+spawn:
+  max_parallel_agents: 3      # 이제 문장이 아니라 강제된다
+  deny: [Plan]
+roles:
+  Explore:         {skills: [], mcp: [], memory: false, deny_tools: [Bash], model: haiku}
+  general-purpose: {skills: ["memory-bank:*"], mcp: [], memory: [/CLAUDE.md]}
+```
+
+모듈도 `roles:`로 자기 스킬이 어느 역할에 필요한지 적을 수 있어서, 목록이 "필요한 것"에서 출발합니다. 목록은 모듈과 매니페스트에 걸쳐 합쳐지고, `memory`는 가장 넓은 선택을 따르고, 한 역할에 모델이 둘이면 오류입니다. `harnist generate`는 `.claude/harnist-runtime.json`을 쓰고 `runtime@harnist`를 켭니다. `roles:`나 `spawn.deny`가 없는 레포는 그대로입니다.
+
+이 레포에서 잰 결과(`runtime/eval/run.py`, 5+5 동시 세션): 서브에이전트 첫 요청이 28~32% 줄었고, 일상 과제 정답은 25/25 그대로였고, 실행당 비용은 4분의 1가량 줄었습니다. 역할이 잃는 것은 깎은 것뿐입니다. 그걸 물으면 지어내지 않고 "없음", "모름"으로 답합니다.
+
 ### 10개 언어
 
 English, 한국어, 日本語, 中文, Español, Français, Русский, हिन्दी, Deutsch, Português를 지원합니다. 오른쪽 위 메뉴에서 고르거나 `?lang=ja`처럼 주소로 지정할 수 있습니다. CLI는 `HARNIST_LANG`(`en` 또는 `ko`)을 따르고, 없으면 시스템 로케일을 따릅니다.
@@ -248,7 +265,7 @@ harnist profile list | compile <이름> | probe <이름> [--for claude|codex] [-
 
 ## 한계
 
-- 스폰 규칙 중 모델 라우팅 외의 것은 `CLAUDE.md`에 들어가는 프롬프트 문장이라 강제되지 않습니다.
+- `roles:`나 `spawn.deny`가 없으면 스폰 규칙 중 모델 라우팅 외의 것은 `CLAUDE.md`에 들어가는 프롬프트 문장이라 강제되지 않습니다. 있으면 runtime 모드가 강제하지만, 모드가 도는 곳(Claude Code 2.1.287 이상, 조직 관리 설치 제외)에서만입니다.
 - 락은 마켓플레이스 변화를 감지만 하고, 플러그인 버전을 고정하지는 못합니다.
 - 사용 집계는 남아 있는 세션 기록 속 명시적 호출만 셉니다. Claude Code는 기본 30일만 보관합니다(`cleanupPeriodDays`).
 - `skillOverrides` 값(`name-only`, `off`)과 스킬 목록 예산은 공식 문서가 아니라 Claude Code에서 실측으로 확인한 것입니다.

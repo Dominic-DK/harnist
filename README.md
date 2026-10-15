@@ -178,6 +178,23 @@ Route the child through a model-API logging proxy (for example `teamclaude serve
 
 Codex works the same way. With `--codex-base-url URL` the probe adds `-c openai_base_url=…`, which Codex follows even in ChatGPT sign-in mode. The probe then judges whether the `sandbox_mode` in the permission instructions the model received matches the declaration (`prompt.sandbox`), and whether user skills or MCP servers were loaded (`prompt.user_skills`, `prompt.user_mcp`). `--ignore-user-config` alone still loaded `~/.agents/skills`, so `inherit: project` also emits `-c skills.include_instructions=false`.
 
+### Subagents by role — the runtime mod
+
+Every subagent normally receives the same skill list, MCP notes and CLAUDE.md as the main session. `roles:` says what each subagent type actually needs, and the [runtime mod](runtime/README.md) cuts the rest per subagent, refuses banned spawns and blocks banned tools.
+
+```yaml
+spawn:
+  max_parallel_agents: 3      # now enforced, not just written down
+  deny: [Plan]
+roles:
+  Explore:         {skills: [], mcp: [], memory: false, deny_tools: [Bash], model: haiku}
+  general-purpose: {skills: ["memory-bank:*"], mcp: [], memory: [/CLAUDE.md]}
+```
+
+A module can add `roles:` too, naming the roles its skills are for, so the list starts from what is needed. Lists merge across modules and the manifest, `memory` keeps the widest choice, and two different models for one role is an error. `harnist generate` writes `.claude/harnist-runtime.json` and enables `runtime@harnist`. Repos without `roles:` or `spawn.deny` are unchanged.
+
+Measured on this repo (`runtime/eval/run.py`, 5 + 5 concurrent sessions): subagent first requests shrank 28–32%, everyday answers stayed 25/25, and cost per run fell about a quarter. What a role loses is what you cut. Asked for it, the subagent answers "none" or "unknown" instead of inventing something.
+
 ### Ten languages
 
 The dashboard speaks English, 한국어, 日本語, 中文, Español, Français, Русский, हिन्दी, Deutsch and Português. Pick one from the top-right menu, or link with `?lang=ja`. The CLI follows `HARNIST_LANG` (`en` or `ko`) and falls back to your system locale.
@@ -244,7 +261,7 @@ harnist profile list | compile <name> | probe <name> [--for claude|codex] [--for
 
 ## Limits
 
-- Spawn rules other than model routing end up as prompt text in `CLAUDE.md`. They are not enforced.
+- Without `roles:` or `spawn.deny`, spawn rules other than model routing end up as prompt text in `CLAUDE.md` and are not enforced. With them, the runtime mod enforces them, but only where mods run (Claude Code 2.1.287+, not organization-managed installs).
 - The lock detects marketplace drift but cannot pin a plugin version.
 - Usage counts only explicit calls in retained session history. Claude Code keeps 30 days by default (`cleanupPeriodDays`).
 - `skillOverrides` values (`name-only`, `off`) and the skill-list budget were observed in Claude Code, not documented.

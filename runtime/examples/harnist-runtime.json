@@ -1,0 +1,8 @@
+{
+  "spawn": { "maxConcurrent": 3, "deny": [] },
+  "roles": {
+    "Explore": { "model": "haiku", "skills": [], "mcp": [], "memory": false, "denyTools": ["Write", "Edit", "NotebookEdit"] },
+    "general-purpose": { "skills": ["insane-search*", "memory-bank:*"], "mcp": [], "memory": ["/CLAUDE.md"] },
+    "*": { "mcp": [] }
+  }
+}

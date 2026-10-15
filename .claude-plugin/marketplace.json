@@ -16,6 +16,11 @@
       "name": "lens",
       "source": "./lens",
       "description": "Langfuse-lite for Claude Code: a mod that records what each session loaded and used, per-request cache hits, turn scores and cost — live in a /lens pane and a line under the prompt, with a lens-review skill that turns the numbers into harness fixes. harnist view shows the traces."
+    },
+    {
+      "name": "runtime",
+      "source": "./runtime",
+      "description": "harnist runtime mod: loads each subagent by its role — trims the skill list, MCP notes and CLAUDE.md per subagent type, enforces spawn limits and per-role tool bans, from one JSON file per repo."
     }
   ]
 }

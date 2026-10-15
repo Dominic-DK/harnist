@@ -58,6 +58,19 @@ lens 가 기본 로드 토큰·캐시 히트·턴 점수를 세션마다 기록�
 - 서브에이전트 역할별 규칙은 시스템 프롬프트 섹션이 아니라 **주입 메시지 편집**과, 역할 에이전트를 `$.agent.register` 로 정의할 때의 프롬프트로 넣는다.
 - 역할별 도구 제한은 설명을 숨기는 대신 `tool.check` 거부로 한다.
 
+## 런타임 최소판 (runtime 0.1.0)
+
+`runtime/` 플러그인. 설정은 레포의 `.claude/harnist-runtime.json`, 없으면 `~/.claude/harnist-runtime.json` (예시: `runtime/examples/harnist-runtime.json`). 역할 키는 서브에이전트 종류, `*` 는 기본값. 메인 세션은 건드리지 않는다.
+
+- `agent.spawn` — 금지 종류 거부, 동시 실행 상한(`$.agent.list()` 의 pending·running·waiting), 역할 모델 지정(Claude 가 고른 모델은 둔다). 결과의 `agentId` 로 역할을 기억한다
+- `prompt.attachment` — `skill_listing`(항목 단위), `mcp_instructions_delta`(`## 서버` 절 단위), `deferred_tools_delta`(`mcp__서버__` 줄), `instructions`(`Contents of <경로>` 블록 단위)를 역할대로 거른다. 남는 게 없으면 `null` 로 주입째 뺀다
+- `tool.check` — 역할의 `denyTools` 와 열지 않은 MCP 서버 도구를 거부
+- `/runtime` — 적용 중인 규칙과 이 세션에서 깎은 글자 수, `/runtime reload`
+
+**실세션 확인** (sonnet 메인, 임시 레포): Explore 는 스킬·MCP 안내·CLAUDE.md 를 하나도 받지 않았고 Bash 가 런타임 사유로 거부됐다. general-purpose 는 허용한 스킬 6개(loop, memory-bank:*)·askew 안내·레포 CLAUDE.md 만 받았고 Bash 는 그대로 됐다. Plan 생성은 런타임 사유로 거부됐다.
+
+**한계**: 처음부터 로드된(지연이 아닌) 도구의 스키마는 `tool.describe` 에 `agentId` 가 없어 숨길 수 없다 — 시험에서 Explore 도 Claude Docs 도구 3개를 봤다. 호출은 `tool.check` 가 막는다. 사용자 범위 router 모드와 모델 지정이 겹치면 먼저 도는 쪽이 정한다.
+
 ## 열린 질문
 
 - ~~서브에이전트의 시스템 프롬프트·스킬 목록이 따로 거치는가~~ → 탐침 1: 주입만 따로, 섹션은 아님

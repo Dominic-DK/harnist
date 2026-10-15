@@ -24,6 +24,8 @@ harnist는 하네스를 모듈화된 코드베이스처럼 다룹니다. 공유�
 
 만든 사람의 환경에서는 안 쓰는 사용자 항목을 보관하고 안 쓰는 내장·플러그인 스킬 29개의 설명을 숨기자, Haiku 세션의 스킬 목록이 다시 예산 안으로 들어왔습니다. 모든 스킬의 이름은 그대로 남아 있습니다. 토큰과 비용 절감은 따라오는 결과일 뿐, 목적은 아닙니다.
 
+같은 생각을 이제 서브에이전트 하나하나까지 적용합니다. [`roles:`](#역할별-서브에이전트--runtime-모드)와 runtime 모드를 쓰면, Explore 서브에이전트에는 스킬 목록과 CLAUDE.md를 싣지 않고, general-purpose에는 그 일에 필요한 스킬만 실을 수 있습니다. 실측에서 서브에이전트 첫 요청이 28~32% 줄었고, 일상 과제 정답률은 그대로였습니다.
+
 ## 빠른 시작
 
 ```bash
@@ -57,7 +59,7 @@ python3 harnist.py view --open      # ~/Documents/github 아래 레포 (HARNIST_
 - **훅**: 알릴 게 있을 때만 말하고, 헤드리스·SDK 실행에서는 아무것도 하지 않습니다.
 - **엔진**: 마켓플레이스 클론에서 실행되므로 따로 받을 필요가 없습니다.
 
-세션마다 무엇이 실리고 쓰였는지 기록하려면 `/plugin install lens@harnist`도 설치합니다. [트레이스](#트레이스--lens-claude-code용-langfuse-라이트)를 참고하세요.
+세션마다 무엇이 실리고 쓰였는지 기록하려면 `/plugin install lens@harnist`도 설치합니다. [트레이스](#트레이스--lens-claude-code용-langfuse-라이트)를 참고하세요. 서브에이전트를 역할별로 싣고 싶다면 `/plugin install runtime@harnist`를 설치합니다. [역할별 서브에이전트](#역할별-서브에이전트--runtime-모드)를 참고하세요. 둘 다 모드라서 Claude Code 2.1.287 이상이 필요합니다.
 
 ## 기능
 
@@ -199,7 +201,7 @@ roles:
 
 모듈도 `roles:`로 자기 스킬이 어느 역할에 필요한지 적을 수 있어서, 목록이 "필요한 것"에서 출발합니다. 목록은 모듈과 매니페스트에 걸쳐 합쳐지고, `memory`는 가장 넓은 선택을 따르고, 한 역할에 모델이 둘이면 오류입니다. `harnist generate`는 `.claude/harnist-runtime.json`을 쓰고 `runtime@harnist`를 켭니다. `roles:`나 `spawn.deny`가 없는 레포는 그대로입니다.
 
-이 레포에서 잰 결과(`runtime/eval/run.py`, 5+5 동시 세션): 서브에이전트 첫 요청이 28~32% 줄었고, 일상 과제 정답은 25/25 그대로였고, 실행당 비용은 4분의 1가량 줄었습니다. 역할이 잃는 것은 깎은 것뿐입니다. 그걸 물으면 지어내지 않고 "없음", "모름"으로 답합니다.
+이 레포에서 잰 결과(`runtime/eval/run.py`, 5+5 동시 세션): 서브에이전트 첫 요청이 28~32% 줄었고, 일상 과제 정답은 25/25 그대로였고, 실행당 비용은 캐시 상태에 따라 9~26% 줄었습니다. 두 번째 평가 묶음은 깎은 것만 골라 묻습니다. 스킬 이름, 전역 CLAUDE.md의 규칙, MCP 서버가 그것입니다. 이 과제들은 각각 5/5 실패했지만, 실패는 모두 지어낸 답이 아니라 "없음", "모름"이었습니다. 목록에서 뺀 스킬도 프롬프트에 이름을 적으면 불러올 수 있습니다. 정말 막아야 하면 `deny_tools`에 `Skill`을 넣습니다. 전체 수치는 [docs/design/mods-runtime.md](docs/design/mods-runtime.md)에 있습니다.
 
 ### 10개 언어
 
@@ -211,7 +213,7 @@ English, 한국어, 日本語, 中文, Español, Français, Русский, ह�
 registry/                          공유 모듈 (개인 데이터 — gitignore, 또는 ~/.harnist/registry)
   base/conventions/module.yaml     layer: base | domain | project
   domain/web-frontend/module.yaml  skills, agents, plugins, mcp, settings, claude_md, rewrites
-<레포>/harness.yaml                 이 레포가 쓰는 모듈 (+ 스폰 규칙, 팀, mirror)
+<레포>/harness.yaml                 이 레포가 쓰는 모듈 (+ 스폰 규칙, 역할, 팀, mirror)
 <레포>/.harnist/modules/project/    프로젝트 전용 모듈 — 레지스트리로 승격 가능
 <레포>/.claude/  CLAUDE.md 블록      생성물 — 손으로 고치지 않는다
 ```
@@ -220,7 +222,7 @@ registry/                          공유 모듈 (개인 데이터 — gitignore
 | --- | --- |
 | `Project.swift` | `harness.yaml` |
 | 모듈과 계층 규칙 | `registry/<계층>/<이름>/module.yaml`. 하위 계층은 상위 계층에 의존하지 못한다 |
-| `tuist generate` | `harnist generate` → `.claude/`, `.mcp.json`, `CLAUDE.md` 관리 블록 |
+| `tuist generate` | `harnist generate` → `.claude/`, `.mcp.json`, `CLAUDE.md` 관리 블록, `roles:`가 있으면 `.claude/harnist-runtime.json` |
 | `Package.resolved` | `harness.lock` — 모듈 내용 해시와 마켓플레이스 커밋 |
 | `tuist graph` | `harnist graph`와 대시보드 |
 

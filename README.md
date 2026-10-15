@@ -24,6 +24,8 @@ harnist treats your harness like a modular codebase. Shared things live in a **r
 
 On the author's machine, archiving unused user items and hiding the descriptions of 29 unused built-in and plugin skills brought a Haiku session's skill list back inside the budget — every skill still listed by name. Token and cost savings come along, but they are the side effect, not the point.
 
+The same idea now goes one level down, to each subagent. With [`roles:`](#subagents-by-role--the-runtime-mod) and the runtime mod, an Explore subagent can get no skill list and no CLAUDE.md while a general-purpose one gets only the skills its work needs. In a measured run, subagent first requests shrank 28–32% with no loss on everyday tasks.
+
 ## Quick start
 
 ```bash
@@ -51,7 +53,7 @@ This repository is also a plugin marketplace:
 /plugin install harnist@harnist
 ```
 
-To record what each session loads and uses, add `/plugin install lens@harnist` too — see [Trace](#trace--lens-a-langfuse-lite-for-claude-code).
+To record what each session loads and uses, add `/plugin install lens@harnist` too — see [Trace](#trace--lens-a-langfuse-lite-for-claude-code). To load each subagent by its role, add `/plugin install runtime@harnist` — see [Subagents by role](#subagents-by-role--the-runtime-mod). Both are mods and need Claude Code 2.1.287 or later.
 
 The plugin adds slash commands — `/harnist:audit`, `/harnist:init`, `/harnist:sync`, `/harnist:promote`, `/harnist:view` — and a tiny SessionStart hook. The commands are user-invoked only, so they add **no always-on context**. The hook stays silent unless something needs attention, and does nothing in headless or SDK runs. The engine runs from the marketplace clone, so no separate checkout is needed.
 
@@ -195,7 +197,7 @@ roles:
 
 A module can add `roles:` too, naming the roles its skills are for, so the list starts from what is needed. Lists merge across modules and the manifest, `memory` keeps the widest choice, and two different models for one role is an error. `harnist generate` writes `.claude/harnist-runtime.json` and enables `runtime@harnist`. Repos without `roles:` or `spawn.deny` are unchanged.
 
-Measured on this repo (`runtime/eval/run.py`, 5 + 5 concurrent sessions): subagent first requests shrank 28–32%, everyday answers stayed 25/25, and cost per run fell about a quarter. What a role loses is what you cut. Asked for it, the subagent answers "none" or "unknown" instead of inventing something.
+Measured on this repo (`runtime/eval/run.py`, 5 + 5 concurrent sessions): subagent first requests shrank 28–32%, everyday answers stayed 25/25, and cost per run fell 9–26% depending on cache state. A second suite asks for exactly what was cut: a skill name, a rule in the global CLAUDE.md, an MCP server. Those failed 5/5 each, and every failure was an honest "none" or "unknown", never an invented answer. A skill dropped from the list still loads when the prompt names it, so add `Skill` to `deny_tools` when it must really be blocked. Full numbers are in [docs/design/mods-runtime.md](docs/design/mods-runtime.md).
 
 ### Ten languages
 
@@ -207,7 +209,7 @@ The dashboard speaks English, 한국어, 日本語, 中文, Español, Français,
 registry/                          shared modules (yours — gitignored, or ~/.harnist/registry)
   base/conventions/module.yaml     layer: base | domain | project
   domain/web-frontend/module.yaml  skills, agents, plugins, mcp, settings, claude_md, rewrites
-<repo>/harness.yaml                which modules this repo uses (+ spawn rules, teams, mirror)
+<repo>/harness.yaml                which modules this repo uses (+ spawn rules, roles, teams, mirror)
 <repo>/.harnist/modules/project/   project-only modules, promotable to the registry
 <repo>/.claude/  CLAUDE.md block   generated — do not edit by hand
 ```
@@ -216,7 +218,7 @@ registry/                          shared modules (yours — gitignored, or ~/.h
 | --- | --- |
 | `Project.swift` | `harness.yaml` |
 | modules and layer rules | `registry/<layer>/<name>/module.yaml`. A lower layer may not depend on a higher one |
-| `tuist generate` | `harnist generate` → `.claude/`, `.mcp.json`, a managed `CLAUDE.md` block |
+| `tuist generate` | `harnist generate` → `.claude/`, `.mcp.json`, a managed `CLAUDE.md` block, and `.claude/harnist-runtime.json` when `roles:` is set |
 | `Package.resolved` | `harness.lock` — content hashes of modules and marketplace commits |
 | `tuist graph` | `harnist graph` and the dashboard |
 

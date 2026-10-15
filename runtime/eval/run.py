@@ -131,6 +131,7 @@ def main():
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--repo", default=str(HARNIST))
+    ap.add_argument("--parallel", action="store_true", help="모든 실행을 한꺼번에 띄운다 — 두 조건이 같은 시간대·캐시 상황을 겪는다")
     a = ap.parse_args()
     repo = Path(a.repo).resolve()
     store = Path.home() / ".cache" / "harnist-runtime-eval" / time.strftime("%Y%m%d-%H%M%S")
@@ -138,15 +139,24 @@ def main():
     cfg = store / "roles.json"
     cfg.write_text(json.dumps(ROLES, indent=2))
     gold = truth(repo)
-    runs = []
-    for i in range(a.reps):
-        for cond in ("A", "B"):  # 번갈아 — 메인 캐시 조건을 맞춘다
-            r = run_once(cond, repo, a.model, cfg, store / f"{cond}{i + 1}.jsonl")
-            lv = lens_view(r["sid"]) if r["sid"] else {"main_first": None, "by_type": {}, "denied": [], "lens_found": False}
-            r.update(lens=lv, grade=grade(r, lv, gold), rep=i + 1)
-            runs.append(r)
-            print(f"{cond}{i + 1}: ${r['cost'] or 0:.3f} {r['wall']:.0f}s correct={sum(r['grade']['correct'].values())}/5 "
-                  f"bash_denied={r['grade']['bash_denied']} plan_denied={r['grade']['plan_denied']} lens={lv['lens_found']}", flush=True)
+    jobs = [(cond, i + 1) for i in range(a.reps) for cond in ("A", "B")]  # 번갈아 — 메인 캐시 조건을 맞춘다
+
+    def one(job):
+        cond, n = job
+        r = run_once(cond, repo, a.model, cfg, store / f"{cond}{n}.jsonl")
+        time.sleep(2)  # lens 기록이 다 써지길 잠깐 기다린다
+        lv = lens_view(r["sid"]) if r["sid"] else {"main_first": None, "by_type": {}, "denied": [], "lens_found": False}
+        r.update(lens=lv, grade=grade(r, lv, gold), rep=n)
+        print(f"{cond}{n}: ${r['cost'] or 0:.3f} {r['wall']:.0f}s correct={sum(r['grade']['correct'].values())}/5 "
+              f"bash_denied={r['grade']['bash_denied']} plan_denied={r['grade']['plan_denied']} lens={lv['lens_found']}", flush=True)
+        return r
+
+    if a.parallel:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+            runs = list(ex.map(one, jobs))
+    else:
+        runs = [one(j) for j in jobs]
     (store / "runs.json").write_text(json.dumps({"gold": gold, "roles": ROLES, "runs": runs}, ensure_ascii=False, indent=2))
     report(runs, store)
 

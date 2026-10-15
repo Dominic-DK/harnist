@@ -145,6 +145,20 @@ B 설정이 깎는 것을 일부러 필요하게 만든 과제 다섯 개. 정�
 
 재현: `python3 runtime/eval/run.py --reps 3` (원본은 `~/.cache/harnist-runtime-eval/`).
 
+## 실제 적용 (2026-10-15)
+
+**전역** — `manifests/global/harness.yaml` 에 조사·안내 역할만 깎는 `roles:`(Explore·claude-code-guide·statusline-setup 의 스킬 목록·MCP·CLAUDE.md)를 두고 `~/.claude/harnist-runtime.json` 을 생성, `runtime@harnist` 를 사용자 범위에 설치했다. 레포 설정이 없는 폴더의 새 세션에서 Explore 의 스킬 목록·MCP 안내가 0자, 지연 도구 목록이 2,116 → 461자.
+
+**readlate (개인 앱 레포)** — 레포 전용 모듈이 자기 에이전트에 필요한 것을 선언했다(ops-reporter 는 ops 스킬 2개, 스크린샷 팀은 역할별 스킬, 모두 MCP 없음·이 레포 CLAUDE.md/AGENTS.md 만). 같은 지시(세 역할을 띄워 Glob 한 번 후 스킬 이름 답하기)로 적용 전후를 쟀다.
+
+| 역할 | 적용 전 첫 요청 | 적용 후 | 스킬 목록 (자) | CLAUDE.md (자) | MCP 안내 (자) |
+| --- | --- | --- | --- | --- | --- |
+| screenshot-compositor | 23,849 | **15,780 (−34%)** | 8,573 → 0 | 8,717 → 4,208 | 5,949 → 0 |
+| ops-reporter | 23,117 | **15,554 (−33%)** | 8,573 → 637 | 8,717 → 4,208 | 5,949 → 0 |
+| Explore (전역 규칙이 이미 적용) | 9,427 | 9,426 | 0 → 0 | 0 → 0 | 0 → 0 |
+
+ops-reporter 는 적용 후 자기 스킬 두 개(`asc-ops-report, aso-rank-watch`)만 답했다. **측정이 드러낸 기존 빈틈**: compositor 가 배경 생성에 써야 할 `image-gen` 은 적용 전에도 목록에 없었다 — 10-06 전역 점검 때 레지스트리로 보관돼 모델이 부를 수 없는 스텁이 됐기 때문이다(에이전트 정의는 옛 이름 `gpt-image-gen` 을 가리킨다). 역할 선언이 "이 역할에 무엇이 필요한가"를 적게 하면서, 필요한데 실리지 않는 것이 보이게 됐다. 해결은 readlate 에 `domain/image-gen` 모듈을 연결하는 것.
+
 ## 열린 질문
 
 - ~~서브에이전트의 시스템 프롬프트·스킬 목록이 따로 거치는가~~ → 탐침 1: 주입만 따로, 섹션은 아님

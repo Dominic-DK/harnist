@@ -918,6 +918,7 @@ def scan_usage(days: int) -> dict:
 
 def usage_report(days: int) -> list[dict]:
     use = scan_usage(days)
+    lens_items = {i["id"]: i for i in lens_report(days)["items"]} if lens_dir().is_dir() else {}
     rows = []
     for it in global_items():
         if it["kind"] == "hook":
@@ -947,8 +948,135 @@ def usage_report(days: int) -> list[dict]:
             verdict = "공통"
         rows.append({**it, "sessions": sessions, "calls": sum(repos.values()),
                      "repos": dict(sorted(repos.items(), key=lambda x: -x[1])),
-                     "last": last, "verdict": verdict, "always_chars": len(it["desc"])})
+                     "last": last, "verdict": verdict, "always_chars": len(it["desc"]),
+                     "lens": lens_for_usage(it, lens_items) if lens_items else None})
     return rows
+
+
+def lens_dir() -> Path:
+    return claude_home() / "lens"
+
+
+def _norm(s: str) -> str:
+    """MCP 서버 이름 정규화 — /context 의 서버명과 mcp__<server>__ 도구 이름을 같은 키로 맞춘다."""
+    return re.sub(r"[^A-Za-z0-9]+", "_", s).lower()
+
+
+def lens_key(kind: str, name: str) -> str:
+    return f"{kind}:{_norm(name) if kind == 'mcp' else name}"
+
+
+def read_lens(days: int) -> list[dict]:
+    """lens 모드 기록(~/.claude/lens/*.jsonl)을 세션 단위로 읽는다. 측정 스냅샷이 있는 세션만 쓴다.
+    리로드·재개 직후 다시 렌더링된 주입 메시지(replay)는 세지 않는다."""
+    import time
+    d = lens_dir()
+    if not d.is_dir():
+        return []
+    cutoff = time.time() - days * 86400
+    cache: dict = {}
+    out = []
+    for f in sorted(d.glob("*.jsonl")):
+        if f.stat().st_mtime < cutoff:
+            continue
+        s = {"id": f.stem, "repo": "?", "model": "", "interactive": None, "snapshot": None, "used": set(),
+             "hook_start": 0, "hook_turns": 0, "turns": 0, "steps": 0, "read": 0, "inputs": 0}
+        for line in f.open(errors="ignore"):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(r, dict) or r.get("v") != 1:
+                continue
+            k = r.get("kind")
+            if k == "session":
+                s["repo"] = repo_of(r["cwd"], cache) if r.get("cwd") else "?"
+                s["model"], s["interactive"] = r.get("model", ""), r.get("interactive")
+            elif k == "snapshot":
+                # 첫 측정(full, token-count API)을 기준으로 삼는다. 이후 summary 는 추정치라 덮어쓰지 않는다
+                if s["snapshot"] is None or (r.get("detail") == "full" and s["snapshot"].get("detail") != "full"):
+                    s["snapshot"] = r
+            elif k == "skill":
+                s["used"].add(lens_key("skill", r.get("skill", "")))
+            elif k == "agent":
+                s["used"].add(lens_key("agent", r.get("type", "")))
+            elif k == "tool":
+                m = re.match(r"mcp__(.+?)__", r.get("tool", ""))
+                if m:
+                    s["used"].add(lens_key("mcp", m.group(1)))
+            elif k == "attachment" and not r.get("replay") and (r.get("origin") or {}).get("kind") == "hook":
+                s["hook_start" if r["origin"].get("event") == "SessionStart" else "hook_turns"] += r.get("chars") or 0
+            elif k == "turn":
+                s["turns"] += 1
+            elif k == "step" and not r.get("agentId"):
+                s["steps"] += 1
+                s["read"] += r.get("cacheRead", 0)
+                s["inputs"] += r.get("cacheRead", 0) + r.get("cacheWrite", 0) + r.get("input", 0)
+        if s["snapshot"]:
+            out.append(s)
+    return out
+
+
+def lens_report(days: int) -> dict:
+    """레포별 기본 로드·캐시 히트·훅 주입량, 항목별 '실린 세션 × 쓴 세션 × 토큰'.
+    기본 로드 = /context 의 used 카테고리 합에서 대화(Messages)를 뺀 것 — 매 세션 깔고 시작하는 토큰."""
+    sessions = read_lens(days)
+    items: dict = {}
+    repos: dict = {}
+    for s in sessions:
+        snap = s["snapshot"]
+        base = sum(c.get("tokens", 0) for c in snap.get("categories", [])
+                   if c.get("kind") == "used" and c.get("name") != "Messages")
+        rp = repos.setdefault(s["repo"], {"repo": s["repo"], "sessions": 0, "base": 0, "hook_start": 0,
+                                          "hook_turns": 0, "turns": 0, "read": 0, "inputs": 0})
+        rp["sessions"] += 1
+        rp["base"] += base
+        for f in ("hook_start", "hook_turns", "turns", "read", "inputs"):
+            rp[f] += s[f]
+        for it in snap.get("items", []):
+            if it.get("kind") == "memory":  # 지시 파일은 늘 쓰이는 것으로 본다
+                continue
+            key = lens_key(it["kind"], it["name"])
+            row = items.setdefault(key, {"id": key, "kind": it["kind"], "name": it["name"], "source": it.get("source", ""),
+                                         "tokens": 0, "deferred": 0, "loaded": 0, "used": 0, "repos": {}})
+            tokens, deferred = it.get("tokens", 0), it.get("deferred")
+            if deferred is None and it["kind"] == "mcp":  # lens 0.1 기록은 대기 중인 MCP 스키마까지 합쳐 셌다
+                tokens, deferred = 0, tokens
+            row["tokens"] = max(row["tokens"], tokens)
+            row["deferred"] = max(row["deferred"], deferred or 0)
+            hit = key in s["used"]
+            row["loaded"] += 1
+            row["used"] += hit
+            per = row["repos"].setdefault(s["repo"], [0, 0])
+            per[0] += 1
+            per[1] += hit
+    for row in items.values():
+        row["idle_tokens"] = row["tokens"] * (row["loaded"] - row["used"])
+    repo_rows = []
+    for rp in repos.values():
+        n = rp["sessions"]
+        repo_rows.append({"repo": rp["repo"], "sessions": n, "base": round(rp["base"] / n),
+                          "cache_hit": round(rp["read"] / rp["inputs"], 3) if rp["inputs"] else None,
+                          "hook_start": round(rp["hook_start"] / n),
+                          "hook_per_turn": round(rp["hook_turns"] / rp["turns"]) if rp["turns"] else None})
+    return {"sessions": len(sessions),
+            "repos": sorted(repo_rows, key=lambda r: -r["sessions"]),
+            "items": sorted(items.values(), key=lambda r: (-r["idle_tokens"], r["id"]))}
+
+
+def lens_for_usage(row: dict, items: dict) -> dict | None:
+    """usage_report 의 전역 항목 하나에 lens 실측(토큰·실린 세션·쓴 세션)을 붙인다. 플러그인은 소속 스킬·MCP 를 합친다."""
+    if row["kind"] == "plugin":
+        pname = row["name"].split("@")[0]
+        parts = [i for i in items.values() if i["source"] == f"plugin:{pname}"
+                 or (i["kind"] == "mcp" and i["id"].startswith(f"mcp:plugin_{_norm(pname)}_"))]
+    else:
+        parts = [items[k] for k in [lens_key(row["kind"], row["name"])] if k in items]
+    if not parts:
+        return None
+    return {"tokens": sum(p["tokens"] for p in parts), "deferred": sum(p["deferred"] for p in parts),
+            "loaded": max(p["loaded"] for p in parts),
+            "used": max(p["used"] for p in parts)}
 
 
 def audit_path() -> Path:
@@ -2631,6 +2759,10 @@ def main(argv=None) -> int:
     us = sub.add_parser("usage", help=tr("전역 스킬·에이전트·플러그인의 레포별 실제 사용(세션 기록)"))
     us.add_argument("--days", type=int, default=90)
     us.add_argument("--json", action="store_true")
+    lp = sub.add_parser("lens", help=tr("lens 모드 실측 — 레포별 기본 로드·캐시 히트·훅 주입, 실렸지만 안 쓴 항목"))
+    lp.add_argument("--days", type=int, default=30)
+    lp.add_argument("--top", type=int, default=20)
+    lp.add_argument("--json", action="store_true")
     dm = sub.add_parser("demote", help=tr("전역 항목을 레지스트리 모듈로 내리고 필요한 레포에만 연결"))
     dm.add_argument("item", help=tr("skill:<이름> | agent:<이름> | plugin:<id> | module:<계층/이름>"))
     dm.add_argument("--to", help=tr("보관할 모듈 이름 (base/… 또는 domain/…)"))
@@ -2708,6 +2840,28 @@ def main(argv=None) -> int:
                     print(tr("  {kind:6} {name:34} 세션 {sessions:3}  상시 {chars:4}자  {last:10}  {where}{mod}",
                              kind=r["kind"], name=r["name"], sessions=r["sessions"], chars=r["always_chars"],
                              last=r["last"] or "-", where=where, mod=mod))
+            return 0
+        if a.cmd == "lens":
+            rep = lens_report(a.days)
+            if a.json:
+                print(json.dumps(rep, ensure_ascii=False, indent=2))
+                return 0
+            if not rep["sessions"]:
+                print(tr("lens 기록이 없다 — lens 모드를 설치하고 세션을 한 번 돌린다 ({path})", path=tilde(lens_dir())))
+                return 0
+            print(tr("lens 실측 {n}세션 (최근 {days}일). 기본 로드 = 대화를 뺀, 매 세션 깔고 시작하는 토큰",
+                     n=rep["sessions"], days=a.days))
+            print(tr("== 레포"))
+            for r in rep["repos"]:
+                hit = f"{r['cache_hit'] * 100:.0f}%" if r["cache_hit"] is not None else "-"
+                per = r["hook_per_turn"] if r["hook_per_turn"] is not None else "-"
+                print(tr("  {repo:40} 세션 {n:3}  기본 로드 {base:>7,}  캐시 히트 {hit:>4}  시작 훅 {hs:>5,}자  턴당 훅 {ht}자",
+                         repo=r["repo"], n=r["sessions"], base=r["base"], hit=hit, hs=r["hook_start"], ht=per))
+            print(tr("== 실렸지만 안 쓴 항목 (안 쓴 세션 × 토큰 순, 대기 = 도구 검색 뒤에 있어 이름만 실린 토큰)"))
+            for i in [x for x in rep["items"] if x["idle_tokens"] > 0][:a.top]:
+                print(tr("  {kind:6} {name:40} {source:22} {tokens:>6,}토큰  대기 {deferred:>6,}  실림 {loaded:3}  사용 {used:3}  누적 {idle:>8,}",
+                         kind=i["kind"], name=i["name"][:40], source=i["source"][:22], tokens=i["tokens"],
+                         deferred=i["deferred"], loaded=i["loaded"], used=i["used"], idle=i["idle_tokens"]))
             return 0
         if a.cmd == "demote":
             for line in demote(a.item, a.to, [Path(p) for p in a.attach], a.dry_run):
@@ -2871,6 +3025,19 @@ def main(argv=None) -> int:
 # 테스트가 harnist.py 의 모든 tr() 템플릿이 여기 있는지 확인한다.
 
 EN = {
+    "lens 모드 실측 — 레포별 기본 로드·캐시 히트·훅 주입, 실렸지만 안 쓴 항목":
+        "lens mod measurements — base load, cache hit and hook injection per repo, and items loaded but unused",
+    "lens 기록이 없다 — lens 모드를 설치하고 세션을 한 번 돌린다 ({path})":
+        "No lens records — install the lens mod and run a session once ({path})",
+    "lens 실측 {n}세션 (최근 {days}일). 기본 로드 = 대화를 뺀, 매 세션 깔고 시작하는 토큰":
+        "lens measured {n} sessions (last {days} days). Base load = tokens every session starts with, conversation excluded",
+    "== 레포": "== Repos",
+    "  {repo:40} 세션 {n:3}  기본 로드 {base:>7,}  캐시 히트 {hit:>4}  시작 훅 {hs:>5,}자  턴당 훅 {ht}자":
+        "  {repo:40} sessions {n:3}  base load {base:>7,}  cache hit {hit:>4}  start hooks {hs:>5,} chars  hooks/turn {ht} chars",
+    "== 실렸지만 안 쓴 항목 (안 쓴 세션 × 토큰 순, 대기 = 도구 검색 뒤에 있어 이름만 실린 토큰)":
+        "== Loaded but unused (sessions unused × tokens; deferred = behind tool search, only the name is loaded)",
+    "  {kind:6} {name:40} {source:22} {tokens:>6,}토큰  대기 {deferred:>6,}  실림 {loaded:3}  사용 {used:3}  누적 {idle:>8,}":
+        "  {kind:6} {name:40} {source:22} {tokens:>6,} tokens  deferred {deferred:>6,}  loaded {loaded:3}  used {used:3}  total {idle:>8,}",
     "skillOverrides 갱신: {names} → {value}": "skillOverrides updated: {names} → {value}",
     "기본값": "default",
     "모델이 받는 스킬 목록 — 출처·설명 길이·실사용·오버라이드": "the skill list the model receives — origin, description length, real usage, overrides",

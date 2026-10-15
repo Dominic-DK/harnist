@@ -378,6 +378,60 @@ class UsageDemoteTest(GlobalFixture):
         self.assertEqual(harnist.load_yaml(mp)["modules"], [])
 
 
+class LensTest(GlobalFixture):
+    """lens 모드 기록(~/.claude/lens/*.jsonl) 집계."""
+
+    def write_lens(self, sid: str, used_skill: bool) -> None:
+        rows = [
+            {"v": 1, "kind": "session", "cwd": str(self.target), "model": "claude-haiku-5-5", "interactive": True},
+            {"v": 1, "kind": "attachment", "type": "hook_success", "origin": {"kind": "hook", "event": "SessionStart"}, "chars": 400},
+            {"v": 1, "kind": "attachment", "type": "hook_success", "origin": {"kind": "hook", "event": "UserPromptSubmit"},
+             "chars": 9999, "replay": True},  # 리로드 재생분은 세지 않는다
+            {"v": 1, "kind": "attachment", "type": "hook_success", "origin": {"kind": "hook", "event": "UserPromptSubmit"}, "chars": 100},
+            {"v": 1, "kind": "step", "agentId": "", "input": 10, "cacheRead": 900, "cacheWrite": 90},
+            {"v": 1, "kind": "tool", "tool": "mcp__open__query", "ms": 5, "agentId": ""},
+            {"v": 1, "kind": "turn", "turnId": "t1"},
+            {"v": 1, "kind": "snapshot", "detail": "full", "categories": [
+                {"name": "System prompt", "kind": "used", "tokens": 3000},
+                {"name": "Skills", "kind": "used", "tokens": 500},
+                {"name": "Messages", "kind": "used", "tokens": 9000},
+                {"name": "MCP tools (deferred)", "kind": "deferred", "tokens": 7000}],
+             "items": [
+                {"kind": "skill", "name": "solo", "source": "userSettings", "tokens": 120, "deferred": 0},
+                {"kind": "skill", "name": "p:do", "source": "plugin:p", "tokens": 80, "deferred": 0},
+                {"kind": "mcp", "name": "open", "source": "mcp", "tokens": 0, "deferred": 700},
+                {"kind": "memory", "name": "/x/CLAUDE.md", "source": "User", "tokens": 50, "deferred": 0}]},
+        ]
+        if used_skill:
+            rows.append({"v": 1, "kind": "skill", "skill": "solo", "source": "userSettings"})
+        write(self.home / f"lens/{sid}.jsonl", "\n".join(json.dumps(r) for r in rows) + "\n")
+
+    def test_lens_report_counts_loaded_used_and_hooks(self):
+        self.write_lens("a", used_skill=True)
+        self.write_lens("b", used_skill=False)
+        write(self.home / "lens/old-probe.jsonl", json.dumps({"kind": "breakdown"}) + "\n")  # v 없는 탐침 기록은 무시
+        rep = harnist.lens_report(36500)
+        self.assertEqual(rep["sessions"], 2)
+        repo = rep["repos"][0]
+        self.assertEqual(repo["repo"], harnist.tilde(self.target))
+        self.assertEqual(repo["base"], 3500)  # 대화(Messages)와 deferred 는 기본 로드에서 뺀다
+        self.assertEqual(repo["cache_hit"], 0.9)
+        self.assertEqual((repo["hook_start"], repo["hook_per_turn"]), (400, 100))  # replay 9999 는 빠진다
+        items = {i["id"]: i for i in rep["items"]}
+        self.assertEqual((items["skill:solo"]["loaded"], items["skill:solo"]["used"]), (2, 1))
+        self.assertEqual(items["skill:solo"]["idle_tokens"], 120)
+        self.assertEqual(items["mcp:open"]["used"], 2)  # mcp__open__query 호출
+        self.assertNotIn("memory:/x/CLAUDE.md", items)
+
+    def test_usage_rows_carry_lens_measurements(self):
+        self.write_lens("a", used_skill=True)
+        rows = {f"{r['kind']}:{r['name']}": r for r in harnist.usage_report(36500)}
+        self.assertEqual(rows["skill:solo"]["lens"], {"tokens": 120, "deferred": 0, "loaded": 1, "used": 1})
+        self.assertEqual(rows["plugin:p@mk"]["lens"]["tokens"], 80)  # 플러그인은 소속 스킬을 합친다
+        self.assertEqual(rows["mcp:open"]["lens"]["deferred"], 700)
+        self.assertIsNone(rows["agent:idle"]["lens"])
+
+
 class HookTest(GlobalFixture):
     def run_hook(self, cwd, **env):
         import subprocess

@@ -213,7 +213,7 @@ English, 한국어, 日本語, 中文, Español, Français, Русский, ह�
 registry/                          공유 모듈 (개인 데이터 — gitignore, 또는 ~/.harnist/registry)
   base/conventions/module.yaml     layer: base | domain | project
   domain/web-frontend/module.yaml  skills, agents, plugins, mcp, settings, claude_md, rewrites
-<레포>/harness.yaml                 이 레포가 쓰는 모듈 (+ 스폰 규칙, 역할, 팀, mirror)
+<레포>/harness.yaml                 이 레포가 쓰는 모듈 (+ 스폰 규칙, 역할, 팀, mirror, block_file)
 <레포>/.harnist/modules/project/    프로젝트 전용 모듈 — 레지스트리로 승격 가능
 <레포>/.claude/  CLAUDE.md 블록      생성물 — 손으로 고치지 않는다
 ```
@@ -226,7 +226,7 @@ registry/                          공유 모듈 (개인 데이터 — gitignore
 | `Package.resolved` | `harness.lock` — 모듈 내용 해시와 마켓플레이스 커밋 |
 | `tuist graph` | `harnist graph`와 대시보드 |
 
-모듈은 다른 레포의 `.claude/`를 `source`로 가리킬 수 있습니다. 그래서 원본이 계속 유일한 기준으로 남고, harnist는 그것을 경로를 고쳐 복사합니다. `mirror: [AGENTS.md]`를 두면 `.claude/`를 읽지 않는 에이전트(예: Codex)에게도 같은 규칙 블록을 씁니다.
+모듈은 다른 레포의 `.claude/`를 `source`로 가리킬 수 있습니다. 그래서 원본이 계속 유일한 기준으로 남고, harnist는 그것을 경로를 고쳐 복사합니다. `mirror: [AGENTS.md]`를 두면 `.claude/`를 읽지 않는 에이전트(예: Codex)에게도 같은 규칙 블록을 씁니다. 팀이 `CLAUDE.md`를 따로 커밋하는 레포라면 `block_file: CLAUDE.local.md`를 두세요. 블록이 개인용 파일로 갑니다(Claude Code는 `CLAUDE.md` 바로 뒤에 읽습니다). harnist는 이 파일을 커밋되는 `.gitignore`가 아니라 `.git/info/exclude`에 넣고, `CLAUDE.md`에 남아 있던 블록은 손대지 않았다면 다음 generate 때 지웁니다.
 
 ### 안전장치
 

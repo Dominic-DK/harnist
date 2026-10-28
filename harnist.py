@@ -32,6 +32,9 @@ LAYERS = {"base": 0, "domain": 1, "project": 2}
 BEGIN = "<!-- harnist:begin -->"
 END = "<!-- harnist:end -->"
 BLOCK_KEY = "CLAUDE.md#harnist"
+# 블록을 쓸 수 있는 파일. CLAUDE.local.md 는 Claude Code 가 CLAUDE.md 바로 뒤에 읽는 개인용 파일이라,
+# 팀이 CLAUDE.md 를 커밋하는 레포에서 하네스 블록이 팀 파일에 섞이지 않게 할 때 쓴다.
+BLOCK_FILES = ("CLAUDE.md", "CLAUDE.local.md")
 
 
 # ---------------------------------------------------------------- i18n
@@ -206,6 +209,7 @@ class Plan:
     files: dict[str, bytes] = field(default_factory=dict)
     block: str | None = None
     mirrors: list = field(default_factory=list)  # 같은 규칙 블록을 받을 다른 에이전트용 파일 (예: AGENTS.md)
+    block_file: str = "CLAUDE.md"  # 블록을 쓸 파일. 팀이 CLAUDE.md 를 커밋하는 레포는 CLAUDE.local.md (개인·미커밋)
     links: str = "refuse"  # 출력 경로가 심볼릭 링크를 지날 때: refuse | skip | follow
     skipped: list = field(default_factory=list)
     lock: dict = field(default_factory=dict)
@@ -214,7 +218,7 @@ class Plan:
     def blocks(self) -> dict[str, str]:
         if self.block is None:
             return {}
-        return {f: self.block for f in ["CLAUDE.md", *self.mirrors]}
+        return {f: self.block for f in [self.block_file, *self.mirrors]}
 
     @property
     def claude_dir(self) -> str:
@@ -346,6 +350,11 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
     scope = man.get("scope", "project")
     if scope not in ("project", "user"):
         raise HarnistError(tr("알 수 없는 scope: {scope}", scope=scope))
+    block_file = man.get("block_file", "CLAUDE.md")
+    if block_file not in BLOCK_FILES:
+        raise HarnistError(tr("block_file 은 {names} 중 하나: {value}", names=" | ".join(BLOCK_FILES), value=block_file))
+    if block_file != "CLAUDE.md" and scope == "user":
+        raise HarnistError(tr("user 스코프의 블록은 ~/.claude/CLAUDE.md 에만 쓴다 — block_file 은 project 매니페스트에서 사용"))
     if out is None and man.get("target"):
         out = expand(man["target"], base)
     if scope == "user" and out is None:
@@ -454,9 +463,10 @@ def build_plan(manifest_path: Path, out: Path | None = None) -> Plan:
 
     local_md = expand(ov["claude_md"], base).read_text().strip() if ov.get("claude_md") else ""
     plan.block = render_block(mods, fragments, spawn, teams, local_md, rt)
+    plan.block_file = block_file
     mirrors = man.get("mirror") or []
     for f in mirrors:
-        if "/" in f or not f.endswith(".md") or f == "CLAUDE.md":
+        if "/" in f or not f.endswith(".md") or f == block_file:
             raise HarnistError(tr("mirror 는 레포 루트의 .md 파일 이름이어야 함: {file}", file=f))
     if mirrors and scope == "user":
         raise HarnistError(tr("user 스코프는 mirror 를 지원하지 않는다 (각 에이전트의 전역 위치가 다름)"))
@@ -554,6 +564,28 @@ def read_ledger(plan: Plan) -> dict:
         return json.loads(plan.ledger_path.read_text())["files"]
     except FileNotFoundError:
         return {}
+
+
+def exclude_locally(root: Path, rel: str) -> str | None:
+    """rel 이 git 에서 무시되지 않으면 .git/info/exclude 에 넣는다. 커밋되는 .gitignore 는 건드리지 않는다.
+    git 레포가 아니거나 git 이 없으면 아무것도 하지 않는다. 추가했으면 그 파일 경로를 돌려준다."""
+    def git(*args):
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+    try:
+        if git("rev-parse", "--is-inside-work-tree").stdout.strip() != "true":
+            return None
+        if git("check-ignore", "-q", rel).returncode == 0:
+            return None
+        path = git("rev-parse", "--git-path", "info/exclude").stdout.strip()
+    except OSError:
+        return None
+    if not path:
+        return None
+    ex = Path(path) if Path(path).is_absolute() else root / path
+    ex.parent.mkdir(parents=True, exist_ok=True)
+    text = ex.read_text() if ex.exists() else ""
+    ex.write_text(text + ("" if not text or text.endswith("\n") else "\n") + f"/{rel}\n")
+    return str(ex)
 
 
 def ledger_manifest(plan: Plan) -> str | None:
@@ -710,6 +742,13 @@ def apply(plan: Plan, actions, ledger: dict) -> None:
         ledger[rel] = sha(plan.files[rel])
     for rel in [r for r in ledger if not is_block_key(r) and r not in plan.files]:
         ledger.pop(rel)
+    # 더 이상 생성하지 않는 파일의 블록이 이미 사라졌으면(사람이 지움) 장부에서만 뺀다
+    for key in [k for k in ledger if is_block_key(k) and k[: -len("#harnist")] not in plan.blocks]:
+        md = plan.root / key[: -len("#harnist")]
+        if not md.exists() or current_block(md.read_text()) is None:
+            ledger.pop(key)
+    if plan.scope == "project" and plan.block_file != "CLAUDE.md" and plan.block is not None:
+        exclude_locally(plan.root, plan.block_file)
     plan.ledger_path.parent.mkdir(parents=True, exist_ok=True)
     plan.ledger_path.write_text(
         json.dumps({"version": VERSION, "manifest": str(plan.manifest_path), "files": dict(sorted(ledger.items()))},
@@ -3553,6 +3592,9 @@ EN = {
     "user 스코프는 skills·agents·CLAUDE.md 블록만 관리한다 — 플러그인·settings·MCP 를 쓰는 모듈은 project 매니페스트에서 사용":
         "user scope manages only skills, agents and the CLAUDE.md block — use modules with plugins, settings or MCP in a project manifest",
     "mirror 는 레포 루트의 .md 파일 이름이어야 함: {file}": "mirror must be a .md file name at the repo root: {file}",
+    "block_file 은 {names} 중 하나: {value}": "block_file must be one of {names}: {value}",
+    "user 스코프의 블록은 ~/.claude/CLAUDE.md 에만 쓴다 — block_file 은 project 매니페스트에서 사용":
+        "user scope writes its block only to ~/.claude/CLAUDE.md — use block_file in a project manifest",
     "user 스코프는 mirror 를 지원하지 않는다 (각 에이전트의 전역 위치가 다름)":
         "user scope does not support mirror (each agent keeps its global files in a different place)",
     "links 는 refuse | skip | follow 중 하나: {value}": "links must be refuse, skip or follow: {value}",

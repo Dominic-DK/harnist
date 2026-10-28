@@ -209,7 +209,7 @@ The dashboard speaks English, 한국어, 日本語, 中文, Español, Français,
 registry/                          shared modules (yours — gitignored, or ~/.harnist/registry)
   base/conventions/module.yaml     layer: base | domain | project
   domain/web-frontend/module.yaml  skills, agents, plugins, mcp, settings, claude_md, rewrites
-<repo>/harness.yaml                which modules this repo uses (+ spawn rules, roles, teams, mirror)
+<repo>/harness.yaml                which modules this repo uses (+ spawn rules, roles, teams, mirror, block_file)
 <repo>/.harnist/modules/project/   project-only modules, promotable to the registry
 <repo>/.claude/  CLAUDE.md block   generated — do not edit by hand
 ```
@@ -222,7 +222,7 @@ registry/                          shared modules (yours — gitignored, or ~/.h
 | `Package.resolved` | `harness.lock` — content hashes of modules and marketplace commits |
 | `tuist graph` | `harnist graph` and the dashboard |
 
-A module can point at another repo's `.claude/` as its `source`, so the original stays the single source of truth and harnist copies it with path rewrites. Set `mirror: [AGENTS.md]` to write the same rule block for agents that do not read `.claude/`, such as Codex.
+A module can point at another repo's `.claude/` as its `source`, so the original stays the single source of truth and harnist copies it with path rewrites. Set `mirror: [AGENTS.md]` to write the same rule block for agents that do not read `.claude/`, such as Codex. If the team commits its own `CLAUDE.md`, set `block_file: CLAUDE.local.md`: the block goes to that personal file instead (Claude Code reads it right after `CLAUDE.md`), harnist adds it to `.git/info/exclude` rather than the committed `.gitignore`, and an unedited block left in `CLAUDE.md` is removed on the next generate.
 
 ### Safety
 

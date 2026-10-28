@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import subprocess
 import os
 import re
 import shutil
@@ -326,6 +327,64 @@ class MirrorTest(Fixture):
         self.manifest({"modules": ["domain/alpha"], "mirror": ["../x.md"]})
         rc, out = self.run_cli("generate")
         self.assertEqual(rc, 2)
+
+    def git_repo(self):
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+
+    def test_block_file_local_keeps_team_claude_md_untouched(self):
+        # 팀이 CLAUDE.md 를 커밋하는 레포 — 하네스 블록은 개인용 CLAUDE.local.md 로
+        self.git_repo()
+        (self.repo / "CLAUDE.md").write_text("# 팀 규칙\n\n@README.md\n")
+        self.manifest({"modules": ["domain/alpha"], "block_file": "CLAUDE.local.md"})
+        rc, out = self.run_cli("generate")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.repo / "CLAUDE.md").read_text(), "# 팀 규칙\n\n@README.md\n")
+        self.assertIn("공통 규칙", (self.repo / "CLAUDE.local.md").read_text())
+        # 커밋되는 .gitignore 는 만들지 않고 로컬 exclude 로 무시한다
+        self.assertFalse((self.repo / ".gitignore").exists())
+        self.assertIn("/CLAUDE.local.md", (self.repo / ".git/info/exclude").read_text())
+        ignored = subprocess.run(["git", "-C", str(self.repo), "check-ignore", "-q", "CLAUDE.local.md"])
+        self.assertEqual(ignored.returncode, 0)
+        rc, out = self.run_cli("check")
+        self.assertEqual(rc, 0, out)
+        # 다시 돌려도 exclude 에 두 번 쓰지 않는다
+        self.run_cli("generate")
+        self.assertEqual((self.repo / ".git/info/exclude").read_text().count("/CLAUDE.local.md"), 1)
+
+    def test_switching_block_file_moves_block_and_keeps_human_text(self):
+        self.git_repo()
+        (self.repo / "CLAUDE.md").write_text("# 팀 규칙\n")
+        self.manifest({"modules": ["domain/alpha"]})
+        self.run_cli("generate")
+        self.assertIn("harnist:begin", (self.repo / "CLAUDE.md").read_text())
+        self.manifest({"modules": ["domain/alpha"], "block_file": "CLAUDE.local.md"})
+        rc, out = self.run_cli("generate")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.repo / "CLAUDE.md").read_text(), "# 팀 규칙\n")
+        self.assertIn("harnist:begin", (self.repo / "CLAUDE.local.md").read_text())
+        rc, out = self.run_cli("check")
+        self.assertEqual(rc, 0, out)
+
+    def test_block_already_removed_by_hand_is_dropped_from_ledger(self):
+        # 사람이 CLAUDE.md 를 팀 파일로 갈아끼워 블록이 이미 없는 상태에서 대상을 옮긴다
+        self.git_repo()
+        self.run_cli("generate")
+        (self.repo / "CLAUDE.md").write_text("# 팀 규칙\n")
+        self.manifest({"modules": ["domain/alpha"], "block_file": "CLAUDE.local.md"})
+        rc, out = self.run_cli("generate")
+        self.assertEqual(rc, 0, out)
+        ledger = json.loads((self.repo / ".claude/.harnist/ledger.json").read_text())["files"]
+        self.assertNotIn("CLAUDE.md#harnist", ledger)
+        self.assertIn("CLAUDE.local.md#harnist", ledger)
+        self.assertEqual((self.repo / "CLAUDE.md").read_text(), "# 팀 규칙\n")
+
+    def test_bad_block_file_and_user_scope_rejected(self):
+        self.manifest({"modules": ["domain/alpha"], "block_file": "NOTES.md"})
+        rc, out = self.run_cli("generate")
+        self.assertEqual(rc, 2, out)
+        self.manifest({"scope": "user", "modules": ["domain/alpha"], "block_file": "CLAUDE.local.md"})
+        rc, out = self.run_cli("generate", "--out", str(self.tmp / "home"))
+        self.assertIn("block_file", out)
 
 
 class GlobalFixture(Fixture):

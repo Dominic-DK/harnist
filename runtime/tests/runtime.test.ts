@@ -93,6 +93,21 @@ describe('runtime', () => {
     expect(trimAttachment('environment', 'x', ex)).toBeUndefined()
   })
 
+  test('경로 경계: 불변 셸·단일 가변 슬롯·예제 격리 및 ../ 우회 차단', async () => {
+    const author = {
+      immutablePaths: ['harness.js', 'lib/**'],
+      mutableSlots: ['scene.js', 'specs/**'],
+      quarantinePaths: ['examples/**'],
+    }
+    expect(toolBan(author, 'Write', { file_path: 'scene.js' }, '/repo')).toBeUndefined()
+    expect(toolBan(author, 'Edit', { file_path: 'harness.js' }, '/repo')).toContain('불변 경로')
+    expect(toolBan(author, 'Edit', { file_path: 'specs/../../repo/lib/dof.js' }, '/repo')).toContain('불변 경로')
+    expect(toolBan(author, 'Write', { file_path: 'scripts/build.py' }, '/repo')).toContain('가변 슬롯')
+    expect(toolBan(author, 'Bash', { command: 'echo x > harness.js' }, '/repo')).toContain('불변 경로')
+    expect(toolBan(author, 'Read', { file_path: 'examples/demo/scene.js' }, '/repo')).toContain('격리 경로')
+    expect(toolBan(author, 'Bash', { command: 'cp examples/a.js scene.js' }, '/repo')).toContain('격리 경로')
+  })
+
   test('설정이 없으면 아무것도 바꾸지 않고 /runtime 이 그렇게 알린다', async ($, on) => {
     mock.store(on)
     on('agent.spawn', async ($, e) => ({ model: e.model ?? 'parent', agentId: 'a1' }))

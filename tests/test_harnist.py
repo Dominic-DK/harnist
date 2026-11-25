@@ -159,9 +159,21 @@ class ResolveTest(Fixture):
         self.assertIs(r["x"]["memory"], True)
         with self.assertRaises(harnist.HarnistError):
             harnist.merge_roles(r, {"x": {"model": "opus"}}, "d")  # 모델 충돌
-        for bad in ({"x": {"color": 1}}, {"x": {"skills": "a"}}, {"x": {"memory": "a"}}, {"x": 3}):
+        for bad in ({"x": {"color": 1}}, {"x": {"skills": "a"}}, {"x": {"memory": "a"}}, {"x": 3}, {"x": {"mutable_slots": "scene.js"}}):
             with self.assertRaises(harnist.HarnistError):
                 harnist.merge_roles({}, bad, "e")
+        b = {}
+        harnist.merge_roles(b, {"author": {"immutable_paths": ["harness.js"], "mutable_slots": ["scene.js", "specs/**"], "quarantine_paths": ["examples/**"]}}, "m1")
+        harnist.merge_roles(b, {"author": {"immutable_paths": ["lib/**"], "mutable_slots": ["scene.js"], "quarantine_paths": ["demos/**"]}}, "m2")
+        self.assertEqual(b["author"]["immutable_paths"], ["harness.js", "lib/**"])
+        self.assertEqual(b["author"]["mutable_slots"], ["scene.js"])  # 가변 슬롯은 교집합으로 좁힌다
+        self.assertEqual(b["author"]["quarantine_paths"], ["demos/**", "examples/**"])
+        rt_b = harnist.runtime_config(b, {})
+        self.assertEqual(rt_b["roles"]["author"], {
+            "immutablePaths": ["harness.js", "lib/**"],
+            "mutableSlots": ["scene.js"],
+            "quarantinePaths": ["demos/**", "examples/**"],
+        })
         self.assertIsNone(harnist.runtime_config({}, {"max_parallel_agents": 3}))  # roles 없으면 기존 레포 동작 그대로
 
 

@@ -283,7 +283,13 @@ def marketplace_commit(name: str) -> str | None:
     return r.stdout.strip() or None
 
 
-ROLE_KEYS = {"model", "skills", "mcp", "memory", "deny_tools"}
+ROLE_KEYS = {"model", "skills", "mcp", "memory", "deny_tools", "immutable_paths", "mutable_slots", "quarantine_paths"}
+ROLE_KEY_MAP = {
+    "deny_tools": "denyTools",
+    "immutable_paths": "immutablePaths",
+    "mutable_slots": "mutableSlots",
+    "quarantine_paths": "quarantinePaths",
+}
 RUNTIME_FILE = "harnist-runtime.json"
 RUNTIME_PLUGIN = {"enabledPlugins": {"runtime@harnist": True},
                   "extraKnownMarketplaces": {"harnist": {"source": {"source": "github", "repo": "Dominic-DK/harnist"}}}}
@@ -303,11 +309,15 @@ def merge_roles(dst: dict, src, origin: str) -> None:
         if bad:
             raise HarnistError(tr("{origin}: roles.{role} 모르는 키 {keys}", origin=origin, role=t, keys=", ".join(bad)))
         d = dst.setdefault(t, {})
-        for k in ("skills", "mcp", "deny_tools"):
+        for k in ("skills", "mcp", "deny_tools", "immutable_paths", "quarantine_paths"):
             if k in r:
                 if not isinstance(r[k], list) or not all(isinstance(x, str) for x in r[k]):
                     raise HarnistError(tr("{origin}: roles.{role}.{key} 는 문자열 목록이어야 한다", origin=origin, role=t, key=k))
                 d[k] = sorted(set(d.get(k, [])) | set(r[k]))
+        if "mutable_slots" in r:
+            if not isinstance(r["mutable_slots"], list) or not all(isinstance(x, str) for x in r["mutable_slots"]):
+                raise HarnistError(tr("{origin}: roles.{role}.{key} 는 문자열 목록이어야 한다", origin=origin, role=t, key="mutable_slots"))
+            d["mutable_slots"] = sorted(set(d["mutable_slots"]) & set(r["mutable_slots"])) if "mutable_slots" in d else sorted(set(r["mutable_slots"]))
         if "memory" in r:
             v, cur = r["memory"], d.get("memory")
             if not (isinstance(v, bool) or (isinstance(v, list) and all(isinstance(x, str) for x in v))):
@@ -335,7 +345,7 @@ def runtime_config(roles: dict, spawn: dict) -> dict | None:
         sp["deny"] = list(spawn["deny"])
     out = {}
     for t, r in roles.items():
-        out[t] = {("denyTools" if k == "deny_tools" else k): v for k, v in r.items()}
+        out[t] = {ROLE_KEY_MAP.get(k, k): v for k, v in r.items()}
     return {"spawn": sp, "roles": out}
 
 
@@ -526,6 +536,12 @@ def render_block(mods, fragments, spawn, teams, local_md, rt: dict | None = None
                 bits.append("CLAUDE.md " + (tr("유지") if m is True else tr("뺌") if m is False else ", ".join(m)))
             if r.get("denyTools"):
                 bits.append(tr("금지 도구 {v}", v=", ".join(r["denyTools"])))
+            if r.get("immutablePaths"):
+                bits.append(tr("불변 경로 {v}", v=", ".join(r["immutablePaths"])))
+            if "mutableSlots" in r:
+                bits.append(tr("가변 슬롯 {v}", v=", ".join(r["mutableSlots"]) or tr("없음")))
+            if r.get("quarantinePaths"):
+                bits.append(tr("격리 경로 {v}", v=", ".join(r["quarantinePaths"])))
             if r.get("model"):
                 bits.append(tr("모델 {v}", v=r["model"]))
             out.append(f"- `{t}`: " + " · ".join(bits))
@@ -3784,6 +3800,9 @@ EN = {
     "유지": "kept",
     "뺌": "dropped",
     "금지 도구 {v}": "banned tools {v}",
+    "불변 경로 {v}": "immutable {v}",
+    "가변 슬롯 {v}": "mutable slots {v}",
+    "격리 경로 {v}": "quarantined {v}",
     "모델 {v}": "model {v}",
     "뺀 것은 그 역할이 모른다고 답한다. 꼭 필요한 스킬은 서브에이전트 프롬프트에 이름을 적으면 불러올 수 있다.": "A role answers that it doesn't know what was cut. A needed skill still loads when the subagent's prompt names it.",
     "profiles.{name}.mods: 모드 이름·경로 목록이어야 한다": "profiles.{name}.mods: must be a list of mod names or paths",

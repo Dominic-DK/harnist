@@ -1,4 +1,4 @@
-// 순수 함수만 — 설정 해석과 주입 깎기. register.ts 가 이벤트에 붙인다.
+// 순수 함수만 — 설정 해석과 주입 깎기·경로 경계 검사. register.ts 가 이벤트에 붙인다.
 
 export type RoleRule = {
   /** 서브에이전트 모델 (Claude 가 직접 고르면 그대로 둔다) */
@@ -11,6 +11,12 @@ export type RoleRule = {
   memory?: boolean | string[]
   /** 이 역할이 못 쓰는 도구 (끝의 * 는 접두어) */
   denyTools?: string[]
+  /** 불변 런타임 셸 경로 글롭 (예: harness.js, lib/**, .bench/gate.conf) — 쓰기 금지 */
+  immutablePaths?: string[]
+  /** 단일 가변 슬롯 경로 글롭 (예: scene.js, specs/**) — 지정되면 이 밖의 쓰기 금지 */
+  mutableSlots?: string[]
+  /** 예제 격리 경로 글롭 (예: examples/**, demos/**) — 열람·복제 금지 */
+  quarantinePaths?: string[]
 }
 
 export type Config = {
@@ -96,10 +102,107 @@ export function trimAttachment(type: string, text: string, role: RoleRule): stri
   return undefined
 }
 
-/** 도구 거부 사유 */
-export function toolBan(role: RoleRule, tool: string): string | undefined {
+const resolvePosix = (p: string): string => {
+  const segs: string[] = []
+  for (const part of p.replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') continue
+    if (part === '..') segs.pop()
+    else segs.push(part)
+  }
+  return '/' + segs.join('/')
+}
+
+/** node:path 의존 없이 cwd 기준 정규화. 레포 밖 탈출은 '../OUTSIDE/...' 로 표기해 가변 슬롯 통과를 막는다 */
+export function normalizeRepoRel(rawPath: string, cwd = '/'): string {
+  const root = resolvePosix(cwd)
+  const full = rawPath.startsWith('/') ? resolvePosix(rawPath) : resolvePosix(`${root}/${rawPath}`)
+  if (full === root) return ''
+  const prefix = root === '/' ? '/' : `${root}/`
+  if (full.startsWith(prefix)) return full.slice(prefix.length)
+  return `../OUTSIDE${full}`
+}
+
+const globToRegExp = (pat: string): RegExp => {
+  const trimmed = pat.replace(/^\/+|\/+$/g, '')
+  if (trimmed.endsWith('/**')) {
+    const base = trimmed.slice(0, -3).replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    return new RegExp(`^${base}(?:/.*)?$`)
+  }
+  const esc = trimmed
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '\0')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\0/g, '.*')
+  return new RegExp(`^${esc}$`)
+}
+
+export const matchPathGlobs = (pats: string[], relPath: string): boolean =>
+  pats.some(p => globToRegExp(p).test(relPath))
+
+const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'write_file', 'edit_file'])
+const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'read_file', 'grep_search'])
+const SHELL_TOOLS = new Set(['Bash', 'run_command'])
+
+export function extractTargetPaths(tool: string, input?: Record<string, unknown>): { writes: string[]; reads: string[] } {
+  const writes: string[] = []
+  const reads: string[] = []
+  if (!input) return { writes, reads }
+
+  if (WRITE_TOOLS.has(tool)) {
+    for (const k of ['file_path', 'path', 'Path', 'notebook_path']) {
+      if (typeof input[k] === 'string' && input[k]) writes.push(input[k] as string)
+    }
+  } else if (READ_TOOLS.has(tool)) {
+    for (const k of ['file_path', 'path', 'Path', 'SearchPath']) {
+      if (typeof input[k] === 'string' && input[k]) reads.push(input[k] as string)
+    }
+  } else if (SHELL_TOOLS.has(tool)) {
+    const cmd = String(input.command ?? input.CommandLine ?? '')
+    for (const m of cmd.matchAll(/(?:>>?|(?:\btee\s+(?:-a\s+)?))\s*([^\s;|&"']+)/g)) {
+      if (m[1] && !m[1].startsWith('/dev/')) writes.push(m[1])
+    }
+    for (const m of cmd.matchAll(/\bsed\s+-i(?:\s+['"][^'"]*['"])?\s+\S+\s+([^\s;|&"']+)/g)) {
+      if (m[1]) writes.push(m[1])
+    }
+    for (const m of cmd.matchAll(/\b(?:cp|mv)\s+(?:-[a-zA-Z]+\s+)*([^\s;|&"']+)\s+([^\s;|&"']+)/g)) {
+      if (m[1]) reads.push(m[1])
+      if (m[2]) writes.push(m[2])
+    }
+    for (const m of cmd.matchAll(/\b(?:cat|head|tail|less)\s+(?:-[a-zA-Z0-9]+\s+)*([^\s;|&"'>]+)/g)) {
+      if (m[1]) reads.push(m[1])
+    }
+  }
+  return { writes, reads }
+}
+
+/** 도구 및 경로 경계 거부 사유 */
+export function toolBan(
+  role: RoleRule,
+  tool: string,
+  input?: Record<string, unknown>,
+  cwd = '/',
+): string | undefined {
   if (match(role.denyTools ?? [], tool)) return `harnist runtime: 이 역할은 ${tool} 을 쓸 수 없다`
   const m = /^mcp__(.+?)__/.exec(tool)
   if (m && role.mcp && !serverKept(role.mcp, m[1]!)) return `harnist runtime: 이 역할에는 ${m[1]} MCP 가 열려 있지 않다`
+
+  if (input && (role.immutablePaths?.length || role.mutableSlots !== undefined || role.quarantinePaths?.length)) {
+    const { writes, reads } = extractTargetPaths(tool, input)
+    for (const wp of writes) {
+      const rel = normalizeRepoRel(wp, cwd)
+      if (role.immutablePaths?.length && matchPathGlobs(role.immutablePaths, rel)) {
+        return `harnist runtime: ${rel} 은 불변 경로(immutablePaths)이므로 수정할 수 없다`
+      }
+      if (role.mutableSlots !== undefined && !matchPathGlobs(role.mutableSlots, rel)) {
+        return `harnist runtime: ${rel} 은 허용된 가변 슬롯(${role.mutableSlots.join(',') || '없음'}) 밖이다`
+      }
+    }
+    for (const rp of reads) {
+      const rel = normalizeRepoRel(rp, cwd)
+      if (role.quarantinePaths?.length && matchPathGlobs(role.quarantinePaths, rel)) {
+        return `harnist runtime: ${rel} 은 격리 경로(quarantinePaths)이므로 열람·복제할 수 없다`
+      }
+    }
+  }
   return undefined
 }

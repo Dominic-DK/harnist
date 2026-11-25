@@ -51,6 +51,9 @@ function summary() {
       r.mcp && `MCP ${r.mcp.length ? r.mcp.join(',') : '없음'}`,
       r.memory !== undefined && `CLAUDE.md ${r.memory === false ? '뺌' : r.memory === true ? '그대로' : r.memory.join(',')}`,
       r.denyTools?.length && `금지 ${r.denyTools.join(',')}`,
+      r.immutablePaths?.length && `불변 ${r.immutablePaths.join(',')}`,
+      r.mutableSlots && `슬롯 ${r.mutableSlots.length ? r.mutableSlots.join(',') : '없음'}`,
+      r.quarantinePaths?.length && `격리 ${r.quarantinePaths.join(',')}`,
     ].filter(Boolean)
     return `  ${t.padEnd(18)} ${bits.join(' · ')}`
   })
@@ -120,7 +123,9 @@ export const register: Register = on => {
     if (!cfg || !e.agentId) return next(e)
     const type = await typeOf($, e.agentId)
     const role = type ? roleFor(cfg, type) : undefined
-    const reason = role && toolBan(role, e.tool)
+    const input = (e as { input?: Record<string, unknown> }).input
+    const cwd = input ? await $.session.cwd() : '/'
+    const reason = role && toolBan(role, e.tool, input, cwd)
     if (!reason) return next(e)
     events.toolDenied++
     return { decision: 'deny', reason }
